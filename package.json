@@ -1,0 +1,36 @@
+{
+  "name": "vertiche_backend-Tet",
+  "version": "1.0.0",
+  "description": "Backend para el proyecto de Vertiche SortFlow",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node -r dotenv/config dist/index.js",
+    "build:start": "tsc && node -r dotenv/config dist/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/A01749697/vertiche_backend-Tet.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/A01749697/vertiche_backend-Tet/issues"
+  },
+  "homepage": "https://github.com/A01749697/vertiche_backend-Tet#readme",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "mysql2": "^3.22.0",
+    "sequelize": "^6.37.8"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.2"
+  }
+}
