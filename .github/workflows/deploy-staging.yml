@@ -1,0 +1,40 @@
+name: Deploy Backend to DEV EC2
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+jobs:
+  build-check:
+    name: TypeScript build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm install
+      - run: npm run build
+
+  deploy:
+    name: Deploy to dev EC2
+    needs: build-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEV_EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ${{ secrets.DEV_DEPLOY_PATH }}
+            git fetch origin
+            git checkout staging
+            git pull origin staging
+            npm install
+            npm run build
+            pm2 restart vertiche-api-staging || pm2 start dist/index.js --name vertiche-api-staging --node-args="-r dotenv/config"
+            pm2 save
