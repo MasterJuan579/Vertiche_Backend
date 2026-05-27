@@ -16,9 +16,10 @@ Desarrollado con **Node.js + TypeScript + Sequelize + MySQL** sobre **AWS RDS**,
 6. [Variables de entorno](#variables-de-entorno)
 7. [Scripts disponibles](#scripts-disponibles)
 8. [Endpoints disponibles](#endpoints-disponibles)
-9. [Despliegue en EC2](#despliegue-en-ec2)
-10. [Convenciones del código](#convenciones-del-código)
-11. [Troubleshooting](#troubleshooting)
+9. [Autenticación](#autenticación)
+10. [Despliegue en EC2](#despliegue-en-ec2)
+11. [Convenciones del código](#convenciones-del-código)
+12. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -216,9 +217,21 @@ DB_NAME=Vertiche_DB
 DB_USER=admin
 DB_PASSWORD=<tu_password>
 DB_HOST=<host-rds>.us-east-1.rds.amazonaws.com
+
+# === Cognito (autenticación) ===
+COGNITO_REGION=us-east-1
+COGNITO_USER_POOL_ID=us-east-1_xxxxxxxxx
+COGNITO_CLIENT_ID=<26-char-client-id>
+
+# === CORS ===
+# Lista separada por comas de orígenes permitidos (sin slash final).
+# En producción, agregar la URL de Vercel.
+CORS_ORIGIN=http://localhost:5173
 ```
 
-> **Importante:** `.env` está en `.gitignore` y nunca debe subirse al repositorio. Comparte las credenciales por canal seguro.
+> **Importante:** `.env` está en `.gitignore` y nunca debe subirse al repositorio. Hay un `.env.example` con la forma esperada. Comparte las credenciales por canal seguro.
+
+> **Credenciales AWS:** El backend NO necesita `AWS_ACCESS_KEY_ID` ni `AWS_SECRET_ACCESS_KEY` en `.env`. En EC2, el SDK toma credenciales del IAM role adjunto (`LabRole` en AWS Academy) vía Instance Metadata Service. En local, usa el perfil AWS configurado en `~/.aws/credentials`.
 
 ---
 
@@ -267,6 +280,87 @@ Todos los recursos siguen el mismo patrón:
 | PrepackCaja    | `/PrepackCaja`    | `id` (number)  |
 | InspeccionQA   | `/InspeccionQA`   | `id` (number)  |
 | Anomalia       | `/Anomalia`       | `id` (number)  |
+
+---
+
+## Autenticación
+
+El backend usa **AWS Cognito** como fuente de verdad para identidad. El **rol** del usuario vive en la tabla `Usuario` (MySQL), no en Cognito. Cognito guarda email + `sub` (UUID); el resto del perfil se busca en MySQL.
+
+### Modelo de seguridad
+
+- **Auto-registro deshabilitado.** Solo un `ADMIN` puede crear usuarios vía `POST /Auth/registrar`.
+- **JWT verification solo en `/Auth/*`.** Los otros 13 controllers (Proveedor, Tienda, etc.) siguen abiertos por ahora — pendiente epic separado.
+- **ID tokens duran 12 h** (config del pool). No hay refresh-token flow implementado todavía; el frontend renueva re-autenticando.
+
+### Flujo
+
+```
+Frontend  ──login (email + password)──►  Cognito InitiateAuth
+Cognito   ──{IdToken, AccessToken, RefreshToken}──►  Frontend
+Frontend  ──Authorization: Bearer <IdToken>──►  Backend /Auth/*
+Backend   ──verifyToken (JWKS + iss + aud + token_use)──►  req.user
+Backend   ──requireRole(ADMIN) → lookup Usuario by cognito_sub──►  handler
+```
+
+### Endpoints de `/Auth`
+
+| Método | Ruta                       | Quién                   | Descripción                              |
+|--------|----------------------------|-------------------------|------------------------------------------|
+| GET    | `/Auth/me`                 | Cualquier autenticado    | Perfil + rol del usuario actual          |
+| POST   | `/Auth/registrar`          | ADMIN                   | Crea usuario (MySQL → Cognito)           |
+| GET    | `/Auth/listarUsuarios`     | ADMIN                   | Lista todos los usuarios                 |
+| DELETE | `/Auth/:id`                | ADMIN                   | Borra usuario (`:id` = `cognito_sub`)    |
+
+### Roles
+
+`ADMIN`, `OPS_MANAGER`, `SUPERVISOR`, `OPERATOR` — definidos como ENUM en `UsuarioModel`. Solo el rol ADMIN tiene acceso a `/Auth/registrar`, `/Auth/listarUsuarios` y `DELETE /Auth/:id`.
+
+### `POST /Auth/registrar`
+
+Body:
+```json
+{
+  "email": "operator@example.com",
+  "nombre": "Operador 1",
+  "rol": "OPERATOR",
+  "temporary_password": "optional"
+}
+```
+
+- Si `temporary_password` no viene, el backend genera uno que cumple la política de Cognito y lo devuelve en la respuesta (única vez).
+- **Atomicidad:** INSERT MySQL con `cognito_sub = '__PENDING__...'` placeholder → `AdminCreateUser` en Cognito → UPDATE MySQL con el `sub` real. Si Cognito falla, se borra la fila MySQL.
+
+### Códigos de error de `/Auth/*`
+
+| Status | Body `error`                                | Causa                                        |
+|--------|---------------------------------------------|----------------------------------------------|
+| 401    | `missing_token`                             | Header `Authorization` ausente               |
+| 401    | `invalid_token`                             | JWT malformado, firma inválida o expirado    |
+| 401    | `wrong_token_use`                           | Se envió access token en vez de id token     |
+| 403    | `forbidden`                                 | Rol no autorizado                            |
+| 403    | `usuario_inactivo`                          | `activo === false` en la fila Usuario        |
+| 403    | `cannot_delete_self`                        | Intento de borrarse a uno mismo              |
+| 404    | `usuario_no_registrado` / `usuario_no_encontrado` | JWT válido pero sin fila en MySQL      |
+| 409    | `email_already_exists`                      | Email duplicado en MySQL                     |
+| 500    | `cognito_create_failed` / `cognito_delete_failed` | Cognito rechazó la operación           |
+
+### Bootstrap del primer ADMIN
+
+El primer admin se crea **manualmente** en la consola de Cognito (con email marcado como verificado, status `FORCE_CHANGE_PASSWORD`), y luego se inserta a mano la fila correspondiente en MySQL:
+
+```sql
+INSERT INTO Usuario (cognito_sub, email, nombre, rol, activo, createdAt, updatedAt)
+VALUES (
+  '<sub-uuid-de-la-consola-cognito>',
+  'admin@example.com',
+  'Admin Principal',
+  'ADMIN',
+  true, NOW(), NOW()
+);
+```
+
+Después de hacer login con la contraseña temporal, el frontend completará el challenge `NEW_PASSWORD_REQUIRED` (o se puede limpiar el estado con `aws cognito-idp admin-set-user-password --permanent` durante desarrollo).
 
 ---
 
@@ -411,3 +505,5 @@ Semestre: 2026
 ---
 
 > Para la documentación completa de endpoints, campos, enums y consumo desde frontend o agentes IA: [API_GUIDE.md](./API_GUIDE.md).
+
+# Yael Gei

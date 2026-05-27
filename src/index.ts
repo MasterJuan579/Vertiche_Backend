@@ -17,6 +17,7 @@ import CajaController from "./controllers/CajaController";
 import PrepackCajaController from "./controllers/PrepackCajaController";
 import InspeccionQAController from "./controllers/InspeccionQAController";
 import AnomaliaController from "./controllers/AnomaliaController";
+import AuthController from "./controllers/AuthController";
 
  const server:Server = new Server({
     port:PORT,
@@ -24,7 +25,14 @@ import AnomaliaController from "./controllers/AnomaliaController";
     middlewares:[
         express.json(),
         express.urlencoded({extended:true}),
-        cors()
+        cors({
+            origin: process.env['CORS_ORIGIN']
+                ?.split(',')
+                .map(s => s.trim())
+                .filter(Boolean) || ['http://localhost:5173'],
+            allowedHeaders: ['Content-Type', 'Authorization'],
+            credentials: false,
+        })
     ],
     controllers:[
         ProveedorController.instance,
@@ -39,7 +47,8 @@ import AnomaliaController from "./controllers/AnomaliaController";
         CajaController.instance,
         PrepackCajaController.instance,
         InspeccionQAController.instance,
-        AnomaliaController.instance
+        AnomaliaController.instance,
+        AuthController.instance
     ]
  });
  server.init();

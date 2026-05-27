@@ -9,12 +9,21 @@ class Server{
     private env:string;
 
     //Método constructor
-    constructor(appInit:{port:number; env:string; middlewares:any[]; controllers: AbstractController[]}){
+    constructor(appInit:{
+        port:number;
+        env:string;
+        middlewares:any[];
+        controllers: AbstractController[];
+        extraRoutes?: (app: express.Application) => void;
+    }){
         this.app = express();
         this.port = appInit.port;
         this.env = appInit.env;
         this.initMiddlewares(appInit.middlewares);
         this.initControllers(appInit.controllers);
+        if (appInit.extraRoutes) {
+            appInit.extraRoutes(this.app);
+        }
         this.connectDB();
     }
 
