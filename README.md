@@ -505,3 +505,5 @@ Semestre: 2026
 ---
 
 > Para la documentación completa de endpoints, campos, enums y consumo desde frontend o agentes IA: [API_GUIDE.md](./API_GUIDE.md).
+
+# Yael Gei
