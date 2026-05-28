@@ -41,7 +41,7 @@ This backend uses a 3-branch CI/CD pipeline:
 4. Commit & push: `git add . && git commit -m "..." && git push origin dev`
 5. When ready to integrate: open PR `dev → staging`
 6. Merge → GitHub Actions auto-deploys to DEV EC2
-7. Test on DEV EC2: `curl http://<DEV_EC2_IP>:8080/`
+7. Test on DEV EC2: `curl http://52.4.219.206:8080/`
 8. When stable: open PR `staging → prod`
 9. Get 1 approval + status checks pass → merge
 10. GitHub Actions auto-deploys to PROD EC2
