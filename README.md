@@ -23,6 +23,50 @@ Desarrollado con **Node.js + TypeScript + Sequelize + MySQL** sobre **AWS RDS**,
 
 ---
 
+### Deployment & Branch Strategy
+
+This backend uses a 3-branch CI/CD pipeline:
+
+| Branch | Purpose | Auto-deploys to |
+|---|---|---|
+| `dev` | Day-to-day teammate commits | (local dev only, no auto-deploy) |
+| `staging` | Integration / pre-prod testing | DEV EC2 — `http://<DEV_EC2_IP>:8080` |
+| `prod` | Production | PROD EC2 — `http://3.221.34.193:8080` |
+
+### Workflow
+
+1. Pull latest dev: `git checkout dev && git pull`
+2. Make your changes
+3. Test locally: `npm install && npm run build && npm start`
+4. Commit & push: `git add . && git commit -m "..." && git push origin dev`
+5. When ready to integrate: open PR `dev → staging`
+6. Merge → GitHub Actions auto-deploys to DEV EC2
+7. Test on DEV EC2: `curl http://<DEV_EC2_IP>:8080/`
+8. When stable: open PR `staging → prod`
+9. Get 1 approval + status checks pass → merge
+10. GitHub Actions auto-deploys to PROD EC2
+
+### Local development setup
+
+1. Clone repo, checkout dev
+2. `npm install`
+3. Create `.env` (see `.env.example`)
+4. Ask the team owner for the dev `.env` values (don't commit them)
+5. `npm run build`
+6. `npm start`
+7. Test at `http://localhost:8080/`
+
+### Environments
+
+| | PROD | DEV (staging) |
+|---|---|---|
+| Branch | `prod` | `staging` |
+| URL | `http://3.221.34.193:8080` | `http://52.4.219.206:8080` |
+| Database | `VerticheSortFlow_DB` | `VerticheSortFlow_DEV_DB` |
+| Cognito Pool | `us-east-1_xpzYpXlRS` (shared) | (same) |
+| PM2 process | `vertiche-api` | `vertiche-api-staging` |
+
+
 ## Tecnologías
 
 | Tecnología   | Versión    | Uso                                |
@@ -506,4 +550,3 @@ Semestre: 2026
 
 > Para la documentación completa de endpoints, campos, enums y consumo desde frontend o agentes IA: [API_GUIDE.md](./API_GUIDE.md).
 
-# Yael Gei
