@@ -30,7 +30,7 @@ This backend uses a 3-branch CI/CD pipeline:
 | Branch | Purpose | Auto-deploys to |
 |---|---|---|
 | `dev` | Day-to-day teammate commits | (local dev only, no auto-deploy) |
-| `staging` | Integration / pre-prod testing | DEV EC2 — `http://<DEV_EC2_IP>:8080` |
+| `staging` | Integration / pre-prod testing | DEV EC2 — `http://52.4.219.206:8080` |
 | `prod` | Production | PROD EC2 — `http://3.221.34.193:8080` |
 
 ### Workflow
