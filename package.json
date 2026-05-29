@@ -28,7 +28,8 @@
     "jsonwebtoken": "^9.0.2",
     "jwks-rsa": "^3.1.0",
     "mysql2": "^3.22.0",
-    "sequelize": "^6.37.8"
+    "sequelize": "^6.37.8",
+    "socket.io": "^4.8.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

@@ -1,6 +1,17 @@
 /* ============================================================================
  * Archivo: PaletController.ts
- * Generado por: Eduardo Serrano Corona
+ * ──────────────────────────────────────────────────────────────────────────
+ *  CONTROLLER COMPARTIDO con un cambio menor del MÓDULO RFID.
+ *  Cambio añadido por team-rfid:
+ *    - listarPalets ahora hace include de OrdenCompra (orden_id,
+ *      nombre_producto, estado). Lo necesita el dropdown del formulario
+ *      Vinculación del frontend RFID para mostrar "PAL-001 — Playera básica
+ *      algodón (OC-2026-001)".
+ *  team-sorter / team-proveedores: si añaden lógica aquí, el include
+ *  no debería estorbar — todo es backward-compatible.
+ *  Ver docs/RFID_MODULE.md.
+ * ──────────────────────────────────────────────────────────────────────────
+ * Generado originalmente por: Eduardo Serrano Corona
  * Descripción: Controller singleton para la entidad Palet. Listar y crear
  *              palets (unidades físicas de transporte).
  * ============================================================================ */
@@ -26,14 +37,22 @@ export default class PaletController extends AbstractController {
         this.router.delete('/:id', this.deletePalet.bind(this));
     }
 
-    private async getListarPalets(req: Request, res: Response): Promise<void> {
-        //SELECT * FROM Palet
+    private async getListarPalets(_req: Request, res: Response): Promise<void> {
         try {
-            const palets = await db.Palet.findAll();
+            const palets = await db.Palet.findAll({
+                include: [
+                    {
+                        model: db.OrdenCompra,
+                        attributes: ['orden_id', 'nombre_producto', 'estado'],
+                        required: false,
+                    },
+                ],
+                order: [['creado_en', 'DESC']],
+            });
             res.status(200).json(palets);
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[PaletController.listarPalets]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
         }
     }
     private async postCrearPalet(req: Request, res: Response): Promise<void> {

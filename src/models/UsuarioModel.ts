@@ -6,7 +6,7 @@
  * ============================================================================ */
 import { Model } from 'sequelize';
 
-type Rol = 'ADMIN' | 'OPS_MANAGER' | 'SUPERVISOR' | 'OPERATOR';
+type Rol = 'ADMIN' | 'SUPERVISOR' | 'BAY_OPERATOR' | 'OPS_MANAGER' | 'QA_INSPECTOR';
 
 interface UsuarioAtributos {
     id: number;
@@ -56,7 +56,7 @@ module.exports = (sequelize: any, DataTypes: any) => {
             }
         },
         rol: {
-            type: DataTypes.ENUM('ADMIN', 'OPS_MANAGER', 'SUPERVISOR', 'OPERATOR'),
+            type: DataTypes.ENUM('ADMIN', 'SUPERVISOR', 'BAY_OPERATOR', 'OPS_MANAGER', 'QA_INSPECTOR'),
             allowNull: false
         },
         activo: {
