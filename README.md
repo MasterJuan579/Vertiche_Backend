@@ -23,6 +23,50 @@ Desarrollado con **Node.js + TypeScript + Sequelize + MySQL** sobre **AWS RDS**,
 
 ---
 
+### Deployment & Branch Strategy
+
+This backend uses a 3-branch CI/CD pipeline:
+
+| Branch | Purpose | Auto-deploys to |
+|---|---|---|
+| `dev` | Day-to-day teammate commits | (local dev only, no auto-deploy) |
+| `staging` | Integration / pre-prod testing | DEV EC2 — `http://52.4.219.206:8080` |
+| `prod` | Production | PROD EC2 — `http://3.221.34.193:8080` |
+
+### Workflow
+
+1. Pull latest dev: `git checkout dev && git pull`
+2. Make your changes
+3. Test locally: `npm install && npm run build && npm start`
+4. Commit & push: `git add . && git commit -m "..." && git push origin dev`
+5. When ready to integrate: open PR `dev → staging`
+6. Merge → GitHub Actions auto-deploys to DEV EC2
+7. Test on DEV EC2: `curl http://52.4.219.206:8080/`
+8. When stable: open PR `staging → prod`
+9. Get 1 approval + status checks pass → merge
+10. GitHub Actions auto-deploys to PROD EC2
+
+### Local development setup
+
+1. Clone repo, checkout dev
+2. `npm install`
+3. Create `.env` (see `.env.example`)
+4. Ask the team owner for the dev `.env` values (don't commit them)
+5. `npm run build`
+6. `npm start`
+7. Test at `http://localhost:8080/`
+
+### Environments
+
+| | PROD | DEV (staging) |
+|---|---|---|
+| Branch | `prod` | `staging` |
+| URL | `http://3.221.34.193:8080` | `http://52.4.219.206:8080` |
+| Database | `VerticheSortFlow_DB` | `VerticheSortFlow_DEV_DB` |
+| Cognito Pool | `us-east-1_xpzYpXlRS` (shared) | (same) |
+| PM2 process | `vertiche-api` | `vertiche-api-staging` |
+
+
 ## Tecnologías
 
 | Tecnología   | Versión    | Uso                                |
@@ -38,6 +82,10 @@ Desarrollado con **Node.js + TypeScript + Sequelize + MySQL** sobre **AWS RDS**,
 | PM2          | —          | Process manager en producción      |
 | dotenv       | 17.x       | Variables de entorno               |
 | cors         | 2.8.x      | Middleware CORS                    |
+| AWS Cognito  | —          | User pool / autenticación          |
+| @aws-sdk/client-cognito-identity-provider | 3.x | SDK para AdminCreateUser / AdminDeleteUser |
+| jsonwebtoken | 9.x        | Verificación de JWT (id_token)     |
+| jwks-rsa     | 3.x        | Cache de claves públicas de Cognito JWKS |
 
 ---
 
@@ -52,8 +100,16 @@ backend_vertiche/
 │   │   └── config.ts             # Configuración de Sequelize por environment
 │   ├── provider/
 │   │   └── Server.ts             # Clase Server — inicializa Express y conecta MySQL
+│   ├── auth/
+│   │   └── cognito.ts            # Cliente AWS SDK Cognito + constantes (issuer, JWKS URL)
+│   ├── middleware/
+│   │   ├── verifyToken.ts        # Valida JWT id_token (firma JWKS + iss + aud + token_use)
+│   │   └── requireRole.ts        # Factory de middleware para gating por rol (ADMIN, etc.)
+│   ├── types/
+│   │   └── express.d.ts          # Augmenta Express.Request con `user` (poblado por verifyToken)
 │   ├── models/
 │   │   ├── index.ts              # Loader dinámico de modelos + associations
+│   │   ├── UsuarioModel.ts       # Perfil + rol (cognito_sub enlaza a Cognito)
 │   │   ├── ProveedorModel.ts
 │   │   ├── TiendaModel.ts
 │   │   ├── OrdenCompraModel.ts
@@ -69,6 +125,7 @@ backend_vertiche/
 │   │   └── AnomaliaModel.ts
 │   └── controllers/
 │       ├── AbstractController.ts
+│       ├── AuthController.ts     # /Auth/me, /Auth/registrar, /Auth/listarUsuarios, DELETE /Auth/:id
 │       ├── ProveedorController.ts
 │       ├── TiendaController.ts
 │       ├── OrdenCompraController.ts
@@ -84,6 +141,7 @@ backend_vertiche/
 │       └── AnomaliaController.ts
 ├── dist/                         # Output compilado de TS (git-ignored)
 ├── .env                          # Variables de entorno (git-ignored)
+├── .env.example                  # Forma esperada de .env (sin secretos, sí versionado)
 ├── .gitignore
 ├── package.json
 ├── tsconfig.json
@@ -93,10 +151,11 @@ backend_vertiche/
 
 ### Patrón de diseño
 
-- **Server:** clase central que inicializa Express, registra middlewares y controllers, y conecta MySQL vía Sequelize.
+- **Server:** clase central que inicializa Express, registra middlewares y controllers, y conecta MySQL vía Sequelize. Expone `extraRoutes` opcional para inyectar rutas ad-hoc.
 - **AbstractController:** clase base abstracta con `router` y `prefix`. Cada controller hereda e implementa `initRoutes()`.
 - **Singleton en controllers:** cada controller expone `static get instance()` para garantizar una sola instancia por proceso.
 - **Modelos Sequelize:** patrón `module.exports = (sequelize, DataTypes) => class XModel extends Model`. El `models/index.ts` los carga dinámicamente con `readdirSync` filtrando archivos `.js` compilados y ejecuta `associate(db)` en cada uno.
+- **Autenticación:** Cognito es fuente de verdad para identidad; el rol vive en MySQL (tabla `Usuario`). `verifyToken` valida el id_token contra JWKS y popula `req.user`; `requireRole('ADMIN')` se encadena para endpoints admin-only. Solo `/Auth/*` aplica gating por ahora (ver [Autenticación](#autenticación)).
 
 ---
 
@@ -506,4 +565,3 @@ Semestre: 2026
 
 > Para la documentación completa de endpoints, campos, enums y consumo desde frontend o agentes IA: [API_GUIDE.md](./API_GUIDE.md).
 
-# Yael Gei
