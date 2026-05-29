@@ -140,7 +140,7 @@ export default class AuthController extends AbstractController {
                 MessageAction: 'SUPPRESS',
                 UserAttributes: [
                     { Name: 'email', Value: email },
-                    { Name: 'email_verified', Value: 'true' },
+                    { Name: 'email_verified', Value: 'false' },
                 ],
             }));
             const subAttr = out.User?.Attributes?.find((a: any) => a.Name === 'sub');
