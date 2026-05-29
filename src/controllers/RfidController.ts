@@ -49,6 +49,94 @@ export default class RfidController extends AbstractController {
     protected initRoutes(): void {
         this.router.get('/health', this.getHealth.bind(this));
         this.router.post('/lectura', this.postLectura.bind(this));
+        this.router.post('/orden-compra', this.postCrearOrdenCompra.bind(this));
+    }
+
+    /**
+     * POST /rfid/orden-compra
+     * Endpoint conveniente para el módulo RFID: crea Pedido + OrdenCompra + Palet
+     * en una sola transacción con IDs autogenerados. Lo usa la pantalla
+     * Vinculación para que el supervisor cree una OC nueva sin salir de la UI.
+     *
+     * Body: { proveedor_id, nombre_producto, modelo?, total_esperados }
+     * Respuesta 201: { pedido, ordenCompra, palet }
+     */
+    private async postCrearOrdenCompra(req: Request, res: Response): Promise<void> {
+        const t = await db.sequelize.transaction();
+        try {
+            const body = req.body || {};
+            const proveedor_id = body.proveedor_id;
+            const nombre_producto = typeof body.nombre_producto === 'string' ? body.nombre_producto.trim() : '';
+            const modelo = typeof body.modelo === 'string' ? body.modelo.trim() : null;
+            const total_esperados = Number(body.total_esperados) || 0;
+
+            const faltantes: string[] = [];
+            if (!proveedor_id) faltantes.push('proveedor_id');
+            if (!nombre_producto) faltantes.push('nombre_producto');
+            if (total_esperados <= 0) faltantes.push('total_esperados (>0)');
+            if (faltantes.length > 0) {
+                await t.rollback();
+                res.status(400).json({
+                    error: 'campos_requeridos',
+                    message: `Faltan campos: ${faltantes.join(', ')}`,
+                    detalle: faltantes,
+                });
+                return;
+            }
+
+            const proveedor = await db.Proveedor.findByPk(proveedor_id, { transaction: t });
+            if (!proveedor) {
+                await t.rollback();
+                res.status(400).json({
+                    error: 'fk_invalida',
+                    message: `Proveedor con id ${proveedor_id} no existe`,
+                });
+                return;
+            }
+
+            const ts = Date.now();
+            const año = new Date().getFullYear();
+            const sufijo = ts.toString().slice(-6);
+            const pedido_id = `PED-${año}-${sufijo}`;
+            const orden_id = `OC-${año}-${sufijo}`;
+            const palet_id = `PAL-${sufijo}`;
+
+            const pedido = await db.Pedido.create({
+                pedido_id,
+                proveedor_id,
+                estado: 'EN_TRANSITO',
+                fecha_pedido: new Date(),
+                total_esperados,
+                total_recibidos: 0,
+            }, { transaction: t });
+
+            const ordenCompra = await db.OrdenCompra.create({
+                orden_id,
+                proveedor_id,
+                modelo,
+                nombre_producto,
+                estado: 'EN_TRANSITO',
+                total_esperados,
+                total_recibidos: 0,
+                fecha_creacion: new Date(),
+            }, { transaction: t });
+
+            const palet = await db.Palet.create({
+                palet_id,
+                pedido_id,
+                orden_id,
+                estado: 'ESPERANDO',
+                total_prepacks: 0,
+                creado_en: new Date(),
+            }, { transaction: t });
+
+            await t.commit();
+            res.status(201).json({ pedido, ordenCompra, palet });
+        } catch (err: any) {
+            await t.rollback();
+            console.error('[RfidController.crearOrdenCompra]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear orden de compra' });
+        }
     }
 
     /**
