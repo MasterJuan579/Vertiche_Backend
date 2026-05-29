@@ -18,6 +18,7 @@ import PrepackCajaController from "./controllers/PrepackCajaController";
 import InspeccionQAController from "./controllers/InspeccionQAController";
 import AnomaliaController from "./controllers/AnomaliaController";
 import AuthController from "./controllers/AuthController";
+import RfidController from "./controllers/RfidController";
 
  const server:Server = new Server({
     port:PORT,
@@ -48,7 +49,8 @@ import AuthController from "./controllers/AuthController";
         PrepackCajaController.instance,
         InspeccionQAController.instance,
         AnomaliaController.instance,
-        AuthController.instance
+        AuthController.instance,
+        RfidController.instance
     ]
  });
  server.init();

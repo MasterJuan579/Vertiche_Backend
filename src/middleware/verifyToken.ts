@@ -1,5 +1,12 @@
 /* ============================================================================
  * Archivo: verifyToken.ts
+ * ──────────────────────────────────────────────────────────────────────────
+ *  Cambio menor del MÓDULO RFID: JWKS client lazy.
+ *  Antes el cliente JWKS se creaba al cargar el módulo, leyendo cognitoConfig
+ *  (lo que requería las env vars). Ahora solo se crea en la primera petición
+ *  autenticada, permitiendo arrancar el backend en local sin Cognito.
+ *  Comportamiento de las rutas /Auth/* sin cambios.
+ * ──────────────────────────────────────────────────────────────────────────
  * Descripción: Middleware Express que valida el JWT id_token de Cognito.
  *              Verifica firma (JWKS cacheada), issuer, audience (clientId),
  *              token_use === 'id' y exp. Al éxito anexa
@@ -8,19 +15,27 @@
  * ============================================================================ */
 import { RequestHandler } from 'express';
 import jwt, { JwtPayload } from 'jsonwebtoken';
-import jwksClient from 'jwks-rsa';
+import jwksClient, { JwksClient } from 'jwks-rsa';
 import { cognitoConfig } from '../auth/cognito';
 
-const jwks = jwksClient({
-    jwksUri: cognitoConfig.jwksUrl,
-    cache: true,
-    cacheMaxEntries: 5,
-    cacheMaxAge: 10 * 60 * 60 * 1000, // 10h — JWKS keys rotate slowly
-});
+// Lazy: el cliente JWKS sólo se crea cuando la primera petición autenticada
+// llega. En dev local sin Cognito, el módulo carga sin tocar las env vars.
+let jwks: JwksClient | null = null;
+function getJwks(): JwksClient {
+    if (!jwks) {
+        jwks = jwksClient({
+            jwksUri: cognitoConfig.jwksUrl,
+            cache: true,
+            cacheMaxEntries: 5,
+            cacheMaxAge: 10 * 60 * 60 * 1000, // 10h — JWKS keys rotate slowly
+        });
+    }
+    return jwks;
+}
 
 function getSigningKey(kid: string): Promise<string> {
     return new Promise((resolve, reject) => {
-        jwks.getSigningKey(kid, (err, key) => {
+        getJwks().getSigningKey(kid, (err, key) => {
             if (err || !key) {
                 reject(err ?? new Error('Signing key not found'));
                 return;

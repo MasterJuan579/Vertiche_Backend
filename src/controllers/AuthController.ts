@@ -143,7 +143,7 @@ export default class AuthController extends AbstractController {
                     { Name: 'email_verified', Value: 'true' },
                 ],
             }));
-            const subAttr = out.User?.Attributes?.find(a => a.Name === 'sub');
+            const subAttr = out.User?.Attributes?.find((a: any) => a.Name === 'sub');
             if (!subAttr?.Value) {
                 throw new Error('Cognito did not return a sub attribute');
             }
