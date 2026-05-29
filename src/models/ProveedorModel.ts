@@ -1,8 +1,6 @@
 /* ============================================================================
  * Archivo: ProveedorModel.ts
- * Generado por: Claude (asistente IA) a partir del ERD Vertiche SortFlow.
- * Descripción: Modelo de Proveedor. Origen de OrdenCompra, Pedido, Tag,
- *              Anomalia e InspeccionQA. PK autoincremental.
+ * Definicion
  * ============================================================================ */
 import {Model} from 'sequelize';
 
@@ -12,7 +10,21 @@ interface ProveedorAtributos{
     codigo:string,
     contacto:string,
     email:string,
-    creado_en:Date
+    creado_en:Date,
+    stars:number,
+    level:string,
+    color:string,
+    origin:string,
+    rfc:string,
+    phone:string,
+    address:string,
+    category:string,
+    since_date:string,
+    payment_terms:string,
+    total_deliveries:number,
+    approval_rate:number,
+    defect_rate:number,
+    avg_leadtime:number
 }
 
 module.exports = (sequelize:any, DataTypes:any)=>{
@@ -24,24 +36,33 @@ module.exports = (sequelize:any, DataTypes:any)=>{
         contacto!: string;
         email!: string;
         creado_en!: Date;
+        stars!: number;
+        level!: string;
+        color!: string;
+        origin!: string;
+        rfc!: string;
+        phone!: string;
+        address!: string;
+        category!: string;
+        since_date!: string;
+        payment_terms!: string;
+        total_deliveries!: number;
+        approval_rate!: number;
+        defect_rate!: number;
+        avg_leadtime!: number;
         static associate(models:any){
-            //Proveedor 1:N OrdenCompra (genera)
             ProveedorModel.hasMany(models.OrdenCompra,{
                 foreignKey:'proveedor_id'
             });
-            //Proveedor 1:N Pedido (suministra)
             ProveedorModel.hasMany(models.Pedido,{
                 foreignKey:'proveedor_id'
             });
-            //Proveedor 1:N Tag (registra)
             ProveedorModel.hasMany(models.Tag,{
                 foreignKey:'proveedor_id'
             });
-            //Proveedor 1:N Anomalia (tiene)
             ProveedorModel.hasMany(models.Anomalia,{
                 foreignKey:'proveedor_id'
             });
-            //Proveedor 1:N InspeccionQA (auditado en)
             ProveedorModel.hasMany(models.InspeccionQA,{
                 foreignKey:'proveedor_id'
             });
@@ -78,6 +99,62 @@ module.exports = (sequelize:any, DataTypes:any)=>{
             type:DataTypes.DATE,
             allowNull:false,
             defaultValue:DataTypes.NOW
+        },
+        stars:{
+            type:DataTypes.DECIMAL(2,1),
+            defaultValue:0.0
+        },
+        level:{
+            type:DataTypes.ENUM('ELITE','MEDIA','BAJA','NUEVO'),
+            defaultValue:'NUEVO'
+        },
+        color:{
+            type:DataTypes.STRING(10),
+            defaultValue:'bn'
+        },
+        origin:{
+            type:DataTypes.STRING,
+            defaultValue:''
+        },
+        rfc:{
+            type:DataTypes.STRING(20),
+            defaultValue:''
+        },
+        phone:{
+            type:DataTypes.STRING(30),
+            defaultValue:''
+        },
+        address:{
+            type:DataTypes.STRING,
+            defaultValue:''
+        },
+        category:{
+            type:DataTypes.STRING(100),
+            defaultValue:''
+        },
+        since_date:{
+            type:DataTypes.STRING(10),
+            defaultValue:''
+        },
+        payment_terms:{
+            type:DataTypes.STRING(20),
+            defaultValue:''
+        },
+        total_deliveries:{
+            type:DataTypes.INTEGER,
+            defaultValue:0
+        },
+        approval_rate:{
+            type:DataTypes.INTEGER,
+            defaultValue:0
+        },
+        defect_rate:{
+            type:DataTypes.INTEGER,
+            defaultValue:0
+        },
+        avg_leadtime:{
+            type:DataTypes.INTEGER,
+            defaultValue:0
         }
     },{
         sequelize,
