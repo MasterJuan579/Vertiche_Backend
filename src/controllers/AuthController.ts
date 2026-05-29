@@ -23,7 +23,7 @@ import { verifyToken } from "../middleware/verifyToken";
 import { requireRole } from "../middleware/requireRole";
 import { cognitoClient, cognitoConfig } from "../auth/cognito";
 
-const ALLOWED_ROLES = ['ADMIN', 'OPS_MANAGER', 'SUPERVISOR', 'OPERATOR'] as const;
+const ALLOWED_ROLES = ['ADMIN', 'SUPERVISOR', 'BAY_OPERATOR', 'OPS_MANAGER', 'QA_INSPECTOR'] as const;
 type Rol = typeof ALLOWED_ROLES[number];
 
 export default class AuthController extends AbstractController {

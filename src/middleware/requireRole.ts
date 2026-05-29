@@ -9,7 +9,7 @@
 import { RequestHandler } from 'express';
 import db from '../models';
 
-type Rol = 'ADMIN' | 'OPS_MANAGER' | 'SUPERVISOR' | 'OPERATOR';
+type Rol = 'ADMIN' | 'SUPERVISOR' | 'BAY_OPERATOR' | 'OPS_MANAGER' | 'QA_INSPECTOR';
 
 export function requireRole(requiredRole: Rol): RequestHandler {
     return async (req, res, next) => {
