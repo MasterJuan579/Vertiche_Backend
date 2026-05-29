@@ -52,6 +52,43 @@ export default class RfidController extends AbstractController {
         this.router.post('/orden-compra', this.postCrearOrdenCompra.bind(this));
         this.router.get('/orden/:orden_id/prepacks', this.getPrepacksDeOrden.bind(this));
         this.router.post('/asignar-epc', this.postAsignarEpc.bind(this));
+        this.router.post('/uid-detectado', this.postUidDetectado.bind(this));
+    }
+
+    /**
+     * POST /rfid/uid-detectado
+     * Modo REGISTRO del ESP32: cuando un chip nuevo se acerca al "Lector 1"
+     * (el de registro), el ESP32 manda el UID aquí. Este endpoint NO escribe
+     * nada en BD — solo emite por Socket.IO un evento 'uid-detectado' que
+     * el frontend (modal "Asignar EPC") escucha para autocompletar el campo.
+     *
+     * Body: { uid: string, lector_id?: string }
+     * Respuesta 200: { ok: true, uid }
+     */
+    private async postUidDetectado(req: Request, res: Response): Promise<void> {
+        try {
+            const uid = typeof req.body?.uid === 'string' ? req.body.uid.trim() : '';
+            const lector_id = typeof req.body?.lector_id === 'string' ? req.body.lector_id.trim() : null;
+
+            if (!uid) {
+                res.status(400).json({
+                    error: 'campos_requeridos',
+                    message: 'uid es requerido',
+                });
+                return;
+            }
+
+            emit('uid-detectado', {
+                uid,
+                lector_id,
+                timestamp: new Date().toISOString(),
+            });
+
+            res.status(200).json({ ok: true, uid });
+        } catch (err: any) {
+            console.error('[RfidController.uidDetectado]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
     }
 
     /**
