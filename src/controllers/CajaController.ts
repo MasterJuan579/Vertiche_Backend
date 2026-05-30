@@ -30,9 +30,9 @@ export default class CajaController extends AbstractController {
         try {
             const cajas = await db.Caja.findAll();
             res.status(200).json(cajas);
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[CajaController.listarCajas]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al listar cajas' });
         }
     }
     private async postCrearCaja(req: Request, res: Response): Promise<void> {
@@ -41,33 +41,33 @@ export default class CajaController extends AbstractController {
             console.log(req.body);
             await db['Caja'].create(req.body);
             res.status(200).json({ message: "Registro de caja exitoso" });
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[CajaController.crearCaja]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear caja' });
         }
     }
 
     private async getCajaPorId(req: Request, res: Response): Promise<void> {
         try {
             const caja = await db.Caja.findByPk(req.params.id);
-            if (!caja) { res.status(404).json({ message: "Caja no encontrada" }); return; }
+            if (!caja) { res.status(404).json({ error: 'no_encontrado', message: "Caja no encontrada" }); return; }
             res.status(200).json(caja);
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[CajaController.getCajaPorId]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al obtener caja' }); }
     }
     private async putActualizarCaja(req: Request, res: Response): Promise<void> {
         try {
             const caja = await db.Caja.findByPk(req.params.id);
-            if (!caja) { res.status(404).json({ message: "Caja no encontrada" }); return; }
+            if (!caja) { res.status(404).json({ error: 'no_encontrado', message: "Caja no encontrada" }); return; }
             await caja.update(req.body);
             res.status(200).json({ message: "Caja actualizada exitosamente" });
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[CajaController.actualizarCaja]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al actualizar caja' }); }
     }
     private async deleteCaja(req: Request, res: Response): Promise<void> {
         try {
             const caja = await db.Caja.findByPk(req.params.id);
-            if (!caja) { res.status(404).json({ message: "Caja no encontrada" }); return; }
+            if (!caja) { res.status(404).json({ error: 'no_encontrado', message: "Caja no encontrada" }); return; }
             await caja.destroy();
             res.status(200).json({ message: "Caja eliminada exitosamente" });
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[CajaController.deleteCaja]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al eliminar caja' }); }
     }
 }
