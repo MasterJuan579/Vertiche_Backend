@@ -751,6 +751,40 @@ Health check del módulo. Útil para el ESP32 antes de empezar a enviar lecturas
 
 ---
 
+### 9.2.1. `GET /rfid/kpi`
+
+KPIs operativos del CEDIS calculados en vivo desde la BD. Lo consume la
+barra superior de la pantalla FlujoCEDIS del módulo RFID, pero **cualquier
+módulo puede usarlo** si necesita estos números (Dashboard, por ejemplo).
+
+**Response 200:**
+```json
+{
+  "tiempo_promedio_min": 345,
+  "benchmark_manual_min": 480,
+  "mejora_porcentaje": 28.1,
+  "objetivo_mejora_pct": 32,
+  "palets_activos": 7,
+  "palets_completados_hoy": 3,
+  "lecturas_hoy": 142,
+  "anomalias_abiertas": 5,
+  "calculado_en": "2026-06-01T03:15:00.000Z"
+}
+```
+
+Campos:
+- `tiempo_promedio_min`: promedio de `PaletEtapaLog.tiempo_ciclo_min` sobre
+  palets `COMPLETADO`. `null` si no hay palets completados todavía.
+- `benchmark_manual_min`: referencia teórica del proceso manual (480 min = 8h).
+- `mejora_porcentaje`: `(benchmark - tiempo_promedio) / benchmark * 100`.
+- `objetivo_mejora_pct`: meta del CEDIS (32%).
+- `palets_activos`: palets en `ESPERANDO`/`EN_RECEPCION`/`EN_QA`/`EN_PACKING`.
+- `palets_completados_hoy`: palets con `timestamp_salida >= 00:00 hoy`.
+- `lecturas_hoy`: EventoLectura insertados hoy.
+- `anomalias_abiertas`: Anomalia con `resuelto = false`.
+
+---
+
 ### 9.3. `POST /rfid/lectura` (endpoint smart del ESP32 — etapa)
 
 Recibe lecturas del lector físico cuando un prepack pasa por un sensor de etapa. Detecta anomalías automáticamente y actualiza `Tag.etapa_actual`.
@@ -1019,12 +1053,15 @@ socket.on('prepack-asignado', (data) => { ... });
 | `tag` | Cuando un Tag cambia de `etapa_actual` o pasa a `qa_fallido=true`. | `{ epc, etapa_actual, etapaAnterior?, qa_fallido? }` |
 | `uid-detectado` | Cuando llega `POST /rfid/uid-detectado` (Lector 1 del ESP32 en modo registro). | `{ uid, lector_id, timestamp }` |
 | `prepack-asignado` | Cuando `POST /rfid/asignar-epc` actualiza el EPC de un placeholder. | `{ epc_anterior, epc_nuevo, tag: {...} }` |
+| `proveedor-actualizado` | Cuando `POST /InspeccionQA/crearInspeccion` termina y el backend recalcula stats del proveedor. **Para team-proveedores** — suscríbete para refrescar el rating sin polling. | `{ id, stars, level, approval_rate, defect_rate, total_deliveries }` |
 
 #### Casos de uso para los otros equipos
 
-- **Dashboard**: suscríbete a `lectura` y `anomalia` para gráficas en vivo sin necesidad de polling. Cada evento contiene el tag enriquecido para que no haya que pedir `GET /Tag/:id`.
+- **Dashboard**: suscríbete a `lectura` y `anomalia` para gráficas en vivo sin necesidad de polling. Cada evento contiene el tag enriquecido para que no haya que pedir `GET /Tag/:id`. Considera `GET /rfid/kpi` para tu barra de métricas si quieres reutilizar el cálculo del CEDIS.
 - **Sorter**: suscríbete a `tag` (etapa cambió) para refrescar la vista de bahía cuando un prepack avanza.
-- **Proveedores**: suscríbete a `anomalia` filtrando por `proveedor_id` para alertar cuando llega un QA_FALLIDO de uno de los tuyos.
+- **Proveedores**: dos eventos útiles —
+  - `anomalia` filtrando por `proveedor_id` para alertar cuando llega un QA_FALLIDO de uno de los tuyos.
+  - `proveedor-actualizado` para refrescar las estrellas/level/defect_rate del proveedor sin tener que hacer polling al endpoint de proveedores. El payload trae los campos ya recalculados.
 
 ---
 

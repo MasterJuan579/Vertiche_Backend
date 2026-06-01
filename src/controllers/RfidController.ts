@@ -3,8 +3,23 @@
  * ──────────────────────────────────────────────────────────────────────────
  *  MÓDULO RFID — Responsable: team-rfid (Moisés Falcón).
  *  Otros equipos: por favor NO modifiquen este archivo sin coordinar.
+ *
+ *  Endpoints expuestos:
+ *    GET  /rfid/health                      — ping del módulo
+ *    GET  /rfid/kpi                         — KPIs en vivo del CEDIS (lo
+ *                                              consume FlujoCEDIS)
+ *    POST /rfid/lectura                     — endpoint smart del ESP32
+ *                                              (detecta anomalías + avanza
+ *                                              etapa + emite socket)
+ *    POST /rfid/uid-detectado               — modo registro del ESP32
+ *                                              (emite socket 'uid-detectado')
+ *    POST /rfid/orden-compra                — crea OC completa con N palets
+ *                                              + M tags placeholder
+ *    GET  /rfid/orden/:orden_id/prepacks    — lista prepacks pendientes/asign.
+ *    POST /rfid/asignar-epc                 — cambia EPC placeholder a real
+ *
  *  Contrato con el hardware ESP32 documentado en docs/rfid_lectura_contrato.md.
- *  Resumen del módulo: docs/RFID_MODULE.md.
+ *  Resumen del módulo: docs/RFID_MODULE.md y API_GUIDE.md sección 9.
  * ──────────────────────────────────────────────────────────────────────────
  * Descripción: Endpoint inteligente que recibe lecturas RFID desde los
  *              lectores físicos (ESP32 + módulo RFID) y orquesta:

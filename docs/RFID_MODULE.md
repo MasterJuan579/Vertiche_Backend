@@ -90,6 +90,9 @@ El backend ya tenía las tablas definidas en `vertiche_db.sql`. Las que el módu
 ### `GET /rfid/health`
 Health check para el ESP32. Devuelve `{ ok: true, ts }`.
 
+### `GET /rfid/kpi`
+KPIs operativos del CEDIS calculados en vivo desde la BD. Lo consume la barra superior de FlujoCEDIS y puede consumirlo cualquier módulo (Dashboard también). Devuelve `tiempo_promedio_min`, `mejora_porcentaje` vs benchmark manual, palets activos/completados hoy, lecturas hoy, anomalías abiertas. Detalle completo en `API_GUIDE.md` 9.2.1.
+
 ### `POST /rfid/lectura`
 **El endpoint principal del módulo.** Recibe del ESP32 cada vez que un sensor lee un EPC.
 
@@ -167,6 +170,9 @@ El backend emite estos eventos en el mismo puerto 8080. El frontend RFID se cone
 | `lectura` | `{ id, epc, lector_id, bahia, etapa, timestamp, rssi, es_duplicado, tag }` | Cada lectura procesada. |
 | `anomalia` | `{ id, epc, tipo_error, etapa, bahia, lector_id, timestamp, descripcion, resuelto: false }` | Cada anomalía nueva. |
 | `tag` | `{ epc, etapa_actual, etapaAnterior?, qa_fallido? }` | Cuando un tag cambia de estado. |
+| `uid-detectado` | `{ uid, lector_id, timestamp }` | Modo registro del ESP32. |
+| `prepack-asignado` | `{ epc_anterior, epc_nuevo, tag }` | Al asignar EPC real a placeholder. |
+| `proveedor-actualizado` | `{ id, stars, level, approval_rate, defect_rate, total_deliveries }` | Después de cada inspección QA — útil para team-proveedores. |
 
 El frontend usa `services/socketClient.js` para suscribirse desde cada pantalla.
 
@@ -282,15 +288,34 @@ Ver detalles en [docs/rfid_lectura_contrato.md](rfid_lectura_contrato.md).
 
 ---
 
+## 8.1. Integración con el módulo Proveedores (recálculo automático)
+
+Cuando llega un `POST /InspeccionQA/crearInspeccion` desde la UI de team-proveedores, el backend del módulo RFID hace 2 cosas:
+
+1. **Si `resultado === 'RECHAZADO'`**: marca el Tag rechazado y crea una `Anomalia QA_FALLIDO` (lo que ya estaba).
+
+2. **Siempre, sin importar el resultado** — `recalcularStatsProveedor`:
+   - Cuenta todas las inspecciones de ese proveedor en BD.
+   - `approval_rate = aprobadas / total * 100`
+   - `defect_rate = rechazadas / total * 100`
+   - Mapea a stars: ≥95%→5★, ≥85%→4★, ≥70%→3★, ≥50%→2★, resto 1★.
+   - level: stars ≥4.5 ELITE, ≥3 MEDIA, resto BAJA.
+   - Hace `UPDATE Proveedor` con los nuevos valores.
+   - Emite `proveedor-actualizado` por Socket.IO.
+
+**Para team-proveedores**: tu dashboard puede suscribirse al evento `proveedor-actualizado` para refrescar el rating del proveedor sin polling. El payload trae los campos ya calculados.
+
+Si quieren cambiar la fórmula de stars/level, edita `InspeccionQAController.recalcularStatsProveedor` y avísale a team-rfid.
+
 ## 9. Pendientes conocidos (deuda técnica del módulo)
 
 | Pendiente | Por qué no se hizo |
 |---|---|
 | Auth Cognito en rutas RFID | Dashboard y otros equipos no mandan token todavía; activar guards los rompería. |
-| KPI "Mejora vs manual" | Falta endpoint que calcule la métrica desde `PaletEtapaLog`. |
 | Etapa AUDITORIA explícita | El backend mapea `SORTING → APROBADO` directo. Falta modelar AUDITORIA como estado intermedio. |
 | Reconexión de Socket.IO con backoff | Hoy reconecta a 1s fijo. Si el backend cae mucho rato, hay reintentos en exceso. |
 | Tests automatizados | El módulo se valida manualmente con el simulator. |
+| Color de productos como paleta cerrada en BD | Hoy `Tag.color` es string libre; el frontend normaliza a Title Case pero la BD aún acepta cualquier valor. |
 
 ---
 

@@ -2,17 +2,27 @@
  * Archivo: InspeccionQAController.ts
  * ──────────────────────────────────────────────────────────────────────────
  *  CONTROLLER COMPARTIDO con cambios del MÓDULO RFID.
+ *
  *  Cambios añadidos por team-rfid en postCrearInspeccion:
- *    - Si resultado === 'RECHAZADO':
+ *
+ *  1) Si resultado === 'RECHAZADO' (efecto sobre el Tag):
  *        · Marca tag.qa_fallido = true
  *        · Setea tag.etapa_actual = 'RECHAZADO'
  *        · Crea Anomalia QA_FALLIDO automática
  *        · Emite por Socket.IO los eventos 'tag' y 'anomalia'
- *    - Cualquier otro resultado se inserta tal cual.
+ *
+ *  2) SIEMPRE (sin importar el resultado) — recalcularStatsProveedor:
+ *        Recalcula stars/level/approval_rate/defect_rate/total_deliveries
+ *        del proveedor con todas sus inspecciones. Emite 'proveedor-actualizado'
+ *        por Socket.IO. Lo consume team-proveedores para refrescar su
+ *        dashboard en vivo.
+ *
  *  team-proveedores: si tu UI manda inspecciones, no necesitas hacer nada
- *  extra — los efectos colaterales pasan acá. Solo asegúrate de mandar el
- *  body con tag_epc, proveedor_id y resultado en mayúsculas.
- *  Ver docs/RFID_MODULE.md.
+ *  extra — los dos efectos pasan acá. Solo asegúrate de mandar el body con
+ *  tag_epc, proveedor_id y resultado en mayúsculas. Te puedes suscribir al
+ *  evento 'proveedor-actualizado' para refrescar el rating sin polling.
+ *
+ *  Ver docs/RFID_MODULE.md y API_GUIDE.md sección 9.10.
  * ──────────────────────────────────────────────────────────────────────────
  * Generado originalmente por: Eduardo Serrano Corona
  * Descripción: Controller singleton para la entidad InspeccionQA. Listar,
