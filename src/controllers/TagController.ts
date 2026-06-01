@@ -35,6 +35,9 @@ export default class TagController extends AbstractController {
         this.router.get('/listarTags', this.getListarTags.bind(this));
         this.router.post('/crearTag', this.postCrearTag.bind(this));
         this.router.get('/buscarSku/:sku', this.getBuscarPorSku.bind(this));
+        // IMPORTANT: literal routes (`/listarTagsCompletos`) MUST be registered
+        // before the `/:id` pattern, otherwise Express matches them as :id.
+        this.router.get('/listarTagsCompletos', this.getListarTagsCompletos.bind(this));
         this.router.get('/:id', this.getTagPorId.bind(this));
         this.router.put('/:id', this.putActualizarTag.bind(this));
         this.router.delete('/:id', this.deleteTag.bind(this));
@@ -229,6 +232,55 @@ export default class TagController extends AbstractController {
     }
 
     // ============================================
+    // GET /Tag/listarTagsCompletos
+    // Igual que /listarTags pero SIN attribute trimming en Tienda/Proveedor y
+    // con Palet.orden_compra anidado (BayScreen → PrepackDetailPanel necesita
+    // tienda.estado y el objeto OrdenCompra completo).
+    // Acepta los mismos query params opcionales: ?limit=, ?order=campo:asc|desc
+    // ============================================
+    private async getListarTagsCompletos(req: Request, res: Response): Promise<void> {
+        try {
+            const limitRaw = req.query['limit'] as string | undefined;
+            const orderRaw = req.query['order'] as string | undefined;
+
+            const findOptions: any = {
+                include: [
+                    { model: db.Tienda },     // FULL — necesario para tienda.estado
+                    { model: db.Proveedor },  // FULL
+                    {
+                        model: db.Palet,
+                        required: false,
+                        include: [
+                            { model: db.OrdenCompra, required: false },
+                        ],
+                    },
+                ]
+            };
+
+            if (limitRaw) {
+                const parsed = parseInt(limitRaw, 10);
+                if (!isNaN(parsed) && parsed > 0) findOptions.limit = parsed;
+            }
+
+            if (orderRaw) {
+                const [campo, dir] = orderRaw.split(':');
+                const direccion = (dir || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+                const camposPermitidos = ['registrado_en', 'createdAt', 'updatedAt', 'epc', 'sku'];
+                if (campo && camposPermitidos.includes(campo)) {
+                    findOptions.order = [[campo, direccion]];
+                }
+            }
+
+            const tags = await db.Tag.findAll(findOptions);
+            const resultado = tags.map((tag: any) => this.serializarTagCompleto(tag));
+            res.status(200).json(resultado);
+        } catch (err: any) {
+            console.error('[TagController.listarTagsCompletos]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al listar tags completos' });
+        }
+    }
+
+    // ============================================
     // GET /Tag/:id
     // Tag completo + Tienda + Proveedor + 50 últimas lecturas + anomalías abiertas.
     // ============================================
@@ -340,6 +392,46 @@ export default class TagController extends AbstractController {
             proveedor: tag.Proveedor || null,
             tienda: tag.Tienda || null,
             palet: tag.Palet || null,
+            prendas: [{ color: tag.color, talla: tag.talla, cantidad: tag.cantidad_piezas }],
+            createdAt: tag.createdAt,
+            updatedAt: tag.updatedAt
+        };
+    }
+
+    // ============================================
+    // Serialización "completa" — para /listarTagsCompletos.
+    // Diferencias vs serializarTag:
+    //   - tienda / proveedor llegan SIN trimming (incluye estado, contacto, etc.)
+    //   - palet trae orden_compra anidado (renombrado a snake_case lowercase)
+    // ============================================
+    private serializarTagCompleto(tag: any): any {
+        if (!tag) return null;
+        const paletJson = tag.Palet
+            ? (typeof tag.Palet.toJSON === 'function' ? tag.Palet.toJSON() : tag.Palet)
+            : null;
+        let palet: any = null;
+        if (paletJson) {
+            const { OrdenCompra, ...rest } = paletJson;
+            palet = { ...rest, orden_compra: OrdenCompra || null };
+        }
+        return {
+            epc: tag.epc,
+            sku: tag.sku,
+            talla: tag.talla,
+            color: tag.color,
+            cantidad_piezas: tag.cantidad_piezas,
+            proveedor_id: tag.proveedor_id,
+            tienda_id: tag.tienda_id,
+            palet_id: tag.palet_id,
+            pedido_id: tag.pedido_id,
+            orden_id: tag.Palet?.orden_id || null,
+            tipo_flujo: tag.tipo_flujo,
+            etapa_actual: tag.etapa_actual,
+            qa_fallido: tag.qa_fallido,
+            registrado_en: tag.registrado_en,
+            proveedor: tag.Proveedor || null,
+            tienda: tag.Tienda || null,
+            palet,
             prendas: [{ color: tag.color, talla: tag.talla, cantidad: tag.cantidad_piezas }],
             createdAt: tag.createdAt,
             updatedAt: tag.updatedAt
