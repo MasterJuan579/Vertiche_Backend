@@ -53,7 +53,7 @@ export default class EventoLecturaController extends AbstractController {
         //INSERT INTO EventoLectura
         try {
             const body = req.body || {};
-            const etapa = typeof body.etapa === 'string' ? body.etapa.trim().toUpperCase() : body.etapa;
+            const etapa = normalizeEtapa(body.etapa);
             const payload = { ...body, etapa };
 
             const lectura = await db['EventoLectura'].create(payload);
@@ -73,21 +73,21 @@ export default class EventoLecturaController extends AbstractController {
                 }
             }
 
+            if (etapa === 'PACKING') {
+                const pickPayload = await this.buildCajaPickPayload(lecturaPayload);
+                if (pickPayload) {
+                    emit('sorter-caja-pick', pickPayload);
+                }
+            }
+
             res.status(200).json({
                 message: "Registro de lectura exitoso",
                 lectura: lecturaPayload,
             });
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
-            console.log(req.body);
-            await db['EventoLectura'].create(req.body);
-            res.status(200).json({ message: "Registro de lectura exitoso" });
-        } 
-        // catch (err: any) {
-        //     console.error('[EventoLecturaController.crearLectura]', err);
-        //     res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear lectura' });
-        // }
+        } catch (err: any) {
+            console.error('[EventoLecturaController.crearLectura]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear lectura' });
+        }
     }
 
     private async markTagInSorting(tag: any): Promise<void> {
@@ -271,6 +271,60 @@ export default class EventoLecturaController extends AbstractController {
         };
     }
 
+    private async buildCajaPickPayload(lecturaPayload: any): Promise<any | null> {
+        const tag = lecturaPayload.tag;
+        if (!tag?.epc) return null;
+
+        const vinculacion = await db.PrepackCaja.findOne({
+            where: { epc: tag.epc },
+            order: [['timestamp_vinculacion', 'DESC']],
+            include: [
+                {
+                    model: db.Caja,
+                    required: false,
+                    include: [{ model: db.Tienda, required: false }],
+                },
+            ],
+        });
+        if (!vinculacion) return null;
+
+        const cajaId = vinculacion.caja_id;
+        const cajaDestino = this.parseCajaDestino(cajaId);
+        const caja = vinculacion.Caja;
+        const tienda = tag.tienda || caja?.Tienda || null;
+        const bahiaActual = this.parseBayNumber(caja?.bahia) ||
+            this.parseBayNumber(lecturaPayload.bahia) ||
+            this.parseBayNumber(tienda?.bahia_asignada);
+
+        return {
+            lectura_id: lecturaPayload.id,
+            epc: tag.epc,
+            lector_id: lecturaPayload.lector_id,
+            etapa: lecturaPayload.etapa,
+            timestamp: lecturaPayload.timestamp,
+            rssi: lecturaPayload.rssi,
+            caja_id: cajaId,
+            cajaDestino,
+            bahiaActual,
+            orden_id: tag.orden_id || tag.pedido_id || null,
+            producto: tag.producto || tag.sku || 'Prepack sin detalle',
+            tienda,
+            tag: {
+                epc: tag.epc,
+                sku: tag.sku,
+                talla: tag.talla,
+                color: tag.color,
+                cantidad_piezas: tag.cantidad_piezas,
+                tienda_id: tag.tienda_id,
+                palet_id: tag.palet_id,
+                pedido_id: tag.pedido_id,
+                tipo_flujo: tag.tipo_flujo,
+                etapa_actual: ETAPA_A_ESTADO_PREPACK.PACKING,
+                qa_fallido: tag.qa_fallido,
+            },
+        };
+    }
+
     private async resolverCajaDestino(tag: any, bahiaActual: number): Promise<number> {
         const vinculacion = await db.PrepackCaja.findOne({
             where: { epc: tag.epc },
@@ -337,4 +391,10 @@ export default class EventoLecturaController extends AbstractController {
             res.status(200).json({ message: "Lectura eliminada exitosamente" });
         } catch (err: any) { console.error('[EventoLecturaController.deleteLectura]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al eliminar lectura' }); }
     }
+}
+
+function normalizeEtapa(raw: any): string {
+    if (typeof raw !== 'string') return raw;
+    const etapa = raw.trim().toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
+    return etapa;
 }

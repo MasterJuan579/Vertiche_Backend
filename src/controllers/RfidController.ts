@@ -689,7 +689,9 @@ export default class RfidController extends AbstractController {
             const body = req.body || {};
             const epc = typeof body.epc === 'string' ? body.epc.trim() : null;
             const lector_id = typeof body.lector_id === 'string' ? body.lector_id.trim() : null;
-            const etapa = typeof body.etapa === 'string' ? body.etapa.trim().toUpperCase() : null;
+            const etapa = typeof body.etapa === 'string'
+                ? body.etapa.trim().toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ')
+                : null;
             const bahia = typeof body.bahia === 'string' ? body.bahia.trim() : null;
             const rssi = typeof body.rssi === 'number' ? body.rssi : null;
             const antenna_port = typeof body.antenna_port === 'string' ? body.antenna_port : null;
@@ -936,6 +938,51 @@ export default class RfidController extends AbstractController {
                     });
                 } else {
                     console.warn(`[RfidController.postLectura] No se pudo resolver bahía para EMPAQUETADO epc=${epc}`);
+                }
+            }
+
+            if (etapa === 'PACKING') {
+                const vinculacion: any = await db.PrepackCaja.findOne({
+                    where: { epc },
+                    order: [['timestamp_vinculacion', 'DESC']],
+                    include: [
+                        {
+                            model: db.Caja,
+                            required: false,
+                            include: [{ model: db.Tienda, required: false }],
+                        },
+                    ],
+                });
+
+                if (vinculacion) {
+                    const cajaId = vinculacion.caja_id;
+                    const cajaDestino = this.parseCajaDestino(cajaId);
+                    const caja = vinculacion.Caja;
+                    const tienda = lecturaPayload.tag.tienda || caja?.Tienda || null;
+                    const bahiaActual = this.normalizarBahiaActual(caja?.bahia) ||
+                        this.normalizarBahiaActual(bahia) ||
+                        this.normalizarBahiaActual(tienda?.bahia_asignada);
+
+                    emit('sorter-caja-pick', {
+                        lectura_id: lectura.id,
+                        epc,
+                        lector_id,
+                        etapa,
+                        timestamp: lectura.timestamp,
+                        rssi,
+                        caja_id: cajaId,
+                        cajaDestino,
+                        bahiaActual,
+                        orden_id: lecturaPayload.tag.orden_id || lecturaPayload.tag.pedido_id || null,
+                        producto: lecturaPayload.tag.producto || lecturaPayload.tag.sku || 'Prepack sin detalle',
+                        tienda,
+                        tag: {
+                            ...lecturaPayload.tag,
+                            etapa_actual: 'EN_CAJA',
+                        },
+                    });
+                } else {
+                    console.warn(`[RfidController.postLectura] No existe PrepackCaja para epc=${epc}`);
                 }
             }
 
