@@ -44,9 +44,9 @@ export default class EventoLecturaController extends AbstractController {
         try {
             const lecturas = await db.EventoLectura.findAll();
             res.status(200).json(lecturas);
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[EventoLecturaController.listarLecturas]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al listar lecturas' });
         }
     }
     private async postCrearLectura(req: Request, res: Response): Promise<void> {
@@ -80,6 +80,12 @@ export default class EventoLecturaController extends AbstractController {
         } catch (err) {
             console.log(err);
             res.status(500).json(err);
+            console.log(req.body);
+            await db['EventoLectura'].create(req.body);
+            res.status(200).json({ message: "Registro de lectura exitoso" });
+        } catch (err: any) {
+            console.error('[EventoLecturaController.crearLectura]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear lectura' });
         }
     }
 
@@ -310,24 +316,24 @@ export default class EventoLecturaController extends AbstractController {
     private async getLecturaPorId(req: Request, res: Response): Promise<void> {
         try {
             const lectura = await db.EventoLectura.findByPk(req.params.id);
-            if (!lectura) { res.status(404).json({ message: "Lectura no encontrada" }); return; }
+            if (!lectura) { res.status(404).json({ error: 'no_encontrado', message: "Lectura no encontrada" }); return; }
             res.status(200).json(lectura);
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[EventoLecturaController.getLecturaPorId]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al obtener lectura' }); }
     }
     private async putActualizarLectura(req: Request, res: Response): Promise<void> {
         try {
             const lectura = await db.EventoLectura.findByPk(req.params.id);
-            if (!lectura) { res.status(404).json({ message: "Lectura no encontrada" }); return; }
+            if (!lectura) { res.status(404).json({ error: 'no_encontrado', message: "Lectura no encontrada" }); return; }
             await lectura.update(req.body);
             res.status(200).json({ message: "Lectura actualizada exitosamente" });
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[EventoLecturaController.actualizarLectura]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al actualizar lectura' }); }
     }
     private async deleteLectura(req: Request, res: Response): Promise<void> {
         try {
             const lectura = await db.EventoLectura.findByPk(req.params.id);
-            if (!lectura) { res.status(404).json({ message: "Lectura no encontrada" }); return; }
+            if (!lectura) { res.status(404).json({ error: 'no_encontrado', message: "Lectura no encontrada" }); return; }
             await lectura.destroy();
             res.status(200).json({ message: "Lectura eliminada exitosamente" });
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[EventoLecturaController.deleteLectura]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al eliminar lectura' }); }
     }
 }

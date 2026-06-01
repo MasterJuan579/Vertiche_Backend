@@ -37,9 +37,9 @@ export default class ProveedorController extends AbstractController {
         try {
             const proveedores = await db.Proveedor.findAll();
             res.status(200).json(proveedores);
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[ProveedorController.listarProveedores]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al listar proveedores' });
         }
     }
     private async postCrearProveedor(req: Request, res: Response): Promise<void> {
@@ -48,9 +48,9 @@ export default class ProveedorController extends AbstractController {
             console.log(req.body);
             await db['Proveedor'].create(req.body);
             res.status(200).json({ message: "Registro de proveedor exitoso" });
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[ProveedorController.crearProveedor]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear proveedor' });
         }
     }
 
@@ -62,13 +62,13 @@ export default class ProveedorController extends AbstractController {
         try {
             const proveedor = await db.Proveedor.findByPk(req.params.id);
             if (!proveedor) {
-                res.status(404).json({ message: "Proveedor no encontrado" });
+                res.status(404).json({ error: 'no_encontrado', message: "Proveedor no encontrado" });
                 return;
             }
             res.status(200).json(proveedor);
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[ProveedorController.getProveedorPorId]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al obtener proveedor' });
         }
     }
 
@@ -80,14 +80,14 @@ export default class ProveedorController extends AbstractController {
         try {
             const proveedor = await db.Proveedor.findByPk(req.params.id);
             if (!proveedor) {
-                res.status(404).json({ message: "Proveedor no encontrado" });
+                res.status(404).json({ error: 'no_encontrado', message: "Proveedor no encontrado" });
                 return;
             }
             await proveedor.update(req.body);
             res.status(200).json({ message: "Proveedor actualizado exitosamente" });
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[ProveedorController.actualizarProveedor]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al actualizar proveedor' });
         }
     }
 
@@ -99,14 +99,14 @@ export default class ProveedorController extends AbstractController {
         try {
             const proveedor = await db.Proveedor.findByPk(req.params.id);
             if (!proveedor) {
-                res.status(404).json({ message: "Proveedor no encontrado" });
+                res.status(404).json({ error: 'no_encontrado', message: "Proveedor no encontrado" });
                 return;
             }
             await proveedor.destroy();
             res.status(200).json({ message: "Proveedor eliminado exitosamente" });
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[ProveedorController.deleteProveedor]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al eliminar proveedor' });
         }
     }
 
