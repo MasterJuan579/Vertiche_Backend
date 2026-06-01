@@ -19,6 +19,7 @@ import InspeccionQAController from "./controllers/InspeccionQAController";
 import AnomaliaController from "./controllers/AnomaliaController";
 import AuthController from "./controllers/AuthController";
 import RfidController from "./controllers/RfidController";
+import PlanQAController from "./controllers/PlanQAController";
 
  const server:Server = new Server({
     port:PORT,
@@ -50,7 +51,8 @@ import RfidController from "./controllers/RfidController";
         InspeccionQAController.instance,
         AnomaliaController.instance,
         AuthController.instance,
-        RfidController.instance
+        RfidController.instance,
+        PlanQAController.instance
     ]
  });
  server.init();
