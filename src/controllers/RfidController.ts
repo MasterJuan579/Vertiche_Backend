@@ -50,6 +50,7 @@ const ETAPA_A_ESTADO_PREPACK: Record<string, string> = {
     QA:        'EN_QA',
     REGISTRO:  'APROBADO',
     SORTING:   'EN_SORTING',
+    EMPAQUETADO: 'EN_CAJA',
     PACKING:   'EN_CAJA',
     AUDITORIA: 'EN_AUDITORIA',
     SALIDA:    'ENVIADO',
@@ -709,7 +710,7 @@ export default class RfidController extends AbstractController {
             if (!ETAPA_A_ESTADO_PREPACK[etapa as string]) {
                 res.status(400).json({
                     error: 'etapa_invalida',
-                    message: `Etapa "${etapa}" no es válida. Usa: RECEPCION, QA, REGISTRO, SORTING, PACKING, AUDITORIA, SALIDA.`,
+                    message: `Etapa "${etapa}" no es válida. Usa: RECEPCION, QA, REGISTRO, SORTING, EMPAQUETADO, PACKING, AUDITORIA, SALIDA.`,
                 });
                 return;
             }
@@ -773,7 +774,7 @@ export default class RfidController extends AbstractController {
             }
 
             // 4) Validación de bahía (sólo en PACKING / SORTING)
-            if ((etapa === 'PACKING' || etapa === 'SORTING') && bahia && tag.Tienda?.bahia_asignada) {
+            if ((etapa === 'PACKING' || etapa === 'EMPAQUETADO' || etapa === 'SORTING') && bahia && tag.Tienda?.bahia_asignada) {
                 if (bahia !== tag.Tienda.bahia_asignada) {
                     const anom = await this.crearAnomalia({
                         epc, lector_id, bahia, etapa,
