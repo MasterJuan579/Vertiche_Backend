@@ -31,9 +31,9 @@ export default class TiendaController extends AbstractController {
         try {
             const tiendas = await db.Tienda.findAll();
             res.status(200).json(tiendas);
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[TiendaController.listarTiendas]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al listar tiendas' });
         }
     }
     private async postCrearTienda(req: Request, res: Response): Promise<void> {
@@ -42,33 +42,33 @@ export default class TiendaController extends AbstractController {
             console.log(req.body);
             await db['Tienda'].create(req.body);
             res.status(200).json({ message: "Registro de tienda exitoso" });
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[TiendaController.crearTienda]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear tienda' });
         }
     }
 
     private async getTiendaPorId(req: Request, res: Response): Promise<void> {
         try {
             const tienda = await db.Tienda.findByPk(req.params.id);
-            if (!tienda) { res.status(404).json({ message: "Tienda no encontrada" }); return; }
+            if (!tienda) { res.status(404).json({ error: 'no_encontrado', message: "Tienda no encontrada" }); return; }
             res.status(200).json(tienda);
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[TiendaController.getTiendaPorId]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al obtener tienda' }); }
     }
     private async putActualizarTienda(req: Request, res: Response): Promise<void> {
         try {
             const tienda = await db.Tienda.findByPk(req.params.id);
-            if (!tienda) { res.status(404).json({ message: "Tienda no encontrada" }); return; }
+            if (!tienda) { res.status(404).json({ error: 'no_encontrado', message: "Tienda no encontrada" }); return; }
             await tienda.update(req.body);
             res.status(200).json({ message: "Tienda actualizada exitosamente" });
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[TiendaController.actualizarTienda]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al actualizar tienda' }); }
     }
     private async deleteTienda(req: Request, res: Response): Promise<void> {
         try {
             const tienda = await db.Tienda.findByPk(req.params.id);
-            if (!tienda) { res.status(404).json({ message: "Tienda no encontrada" }); return; }
+            if (!tienda) { res.status(404).json({ error: 'no_encontrado', message: "Tienda no encontrada" }); return; }
             await tienda.destroy();
             res.status(200).json({ message: "Tienda eliminada exitosamente" });
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[TiendaController.deleteTienda]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al eliminar tienda' }); }
     }
 }

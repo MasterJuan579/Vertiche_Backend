@@ -52,7 +52,7 @@ export default class PaletController extends AbstractController {
             res.status(200).json(palets);
         } catch (err: any) {
             console.error('[PaletController.listarPalets]', err);
-            res.status(500).json({ error: 'error_interno', message: err.message });
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al listar palets' });
         }
     }
     private async postCrearPalet(req: Request, res: Response): Promise<void> {
@@ -61,33 +61,33 @@ export default class PaletController extends AbstractController {
             console.log(req.body);
             await db['Palet'].create(req.body);
             res.status(200).json({ message: "Registro de palet exitoso" });
-        } catch (err) {
-            console.log(err);
-            res.status(500).json(err);
+        } catch (err: any) {
+            console.error('[PaletController.crearPalet]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear palet' });
         }
     }
 
     private async getPaletPorId(req: Request, res: Response): Promise<void> {
         try {
             const palet = await db.Palet.findByPk(req.params.id);
-            if (!palet) { res.status(404).json({ message: "Palet no encontrado" }); return; }
+            if (!palet) { res.status(404).json({ error: 'no_encontrado', message: "Palet no encontrado" }); return; }
             res.status(200).json(palet);
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[PaletController.getPaletPorId]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al obtener palet' }); }
     }
     private async putActualizarPalet(req: Request, res: Response): Promise<void> {
         try {
             const palet = await db.Palet.findByPk(req.params.id);
-            if (!palet) { res.status(404).json({ message: "Palet no encontrado" }); return; }
+            if (!palet) { res.status(404).json({ error: 'no_encontrado', message: "Palet no encontrado" }); return; }
             await palet.update(req.body);
             res.status(200).json({ message: "Palet actualizado exitosamente" });
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[PaletController.actualizarPalet]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al actualizar palet' }); }
     }
     private async deletePalet(req: Request, res: Response): Promise<void> {
         try {
             const palet = await db.Palet.findByPk(req.params.id);
-            if (!palet) { res.status(404).json({ message: "Palet no encontrado" }); return; }
+            if (!palet) { res.status(404).json({ error: 'no_encontrado', message: "Palet no encontrado" }); return; }
             await palet.destroy();
             res.status(200).json({ message: "Palet eliminado exitosamente" });
-        } catch (err) { console.log(err); res.status(500).json(err); }
+        } catch (err: any) { console.error('[PaletController.deletePalet]', err); res.status(500).json({ error: 'error_interno', message: err.message || 'Error al eliminar palet' }); }
     }
 }
