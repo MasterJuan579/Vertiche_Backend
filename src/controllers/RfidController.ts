@@ -3,8 +3,23 @@
  * ──────────────────────────────────────────────────────────────────────────
  *  MÓDULO RFID — Responsable: team-rfid (Moisés Falcón).
  *  Otros equipos: por favor NO modifiquen este archivo sin coordinar.
+ *
+ *  Endpoints expuestos:
+ *    GET  /rfid/health                      — ping del módulo
+ *    GET  /rfid/kpi                         — KPIs en vivo del CEDIS (lo
+ *                                              consume FlujoCEDIS)
+ *    POST /rfid/lectura                     — endpoint smart del ESP32
+ *                                              (detecta anomalías + avanza
+ *                                              etapa + emite socket)
+ *    POST /rfid/uid-detectado               — modo registro del ESP32
+ *                                              (emite socket 'uid-detectado')
+ *    POST /rfid/orden-compra                — crea OC completa con N palets
+ *                                              + M tags placeholder
+ *    GET  /rfid/orden/:orden_id/prepacks    — lista prepacks pendientes/asign.
+ *    POST /rfid/asignar-epc                 — cambia EPC placeholder a real
+ *
  *  Contrato con el hardware ESP32 documentado en docs/rfid_lectura_contrato.md.
- *  Resumen del módulo: docs/RFID_MODULE.md.
+ *  Resumen del módulo: docs/RFID_MODULE.md y API_GUIDE.md sección 9.
  * ──────────────────────────────────────────────────────────────────────────
  * Descripción: Endpoint inteligente que recibe lecturas RFID desde los
  *              lectores físicos (ESP32 + módulo RFID) y orquesta:
@@ -27,18 +42,30 @@ import { emit } from "../realtime/socketIo";
 const VENTANA_DUPLICADO_MS = 5_000;
 const UMBRAL_RSSI_BAJO = -75;
 
-// Mapeo etapa del lector físico → estado del prepack (Tag.etapa_actual)
+// Mapeo etapa del lector físico → estado del prepack (Tag.etapa_actual).
+// Hay un lector RFID en cada una de las 7 etapas del flujo CEDIS.
 // El estado solo avanza, nunca retrocede (excepto a RECHAZADO si qa_fallido).
 const ETAPA_A_ESTADO_PREPACK: Record<string, string> = {
     RECEPCION: 'REGISTRADO',
     QA:        'EN_QA',
-    SORTING:   'APROBADO',
+    REGISTRO:  'APROBADO',
+    SORTING:   'EN_SORTING',
+    EMPAQUETADO: 'EN_CAJA',
     PACKING:   'EN_CAJA',
+    AUDITORIA: 'EN_AUDITORIA',
     SALIDA:    'ENVIADO',
 };
 
 // Orden de avance — no permitimos regresar a etapas anteriores.
-const ORDEN_ESTADOS = ['REGISTRADO', 'EN_QA', 'APROBADO', 'EN_CAJA', 'ENVIADO'];
+const ORDEN_ESTADOS = [
+    'REGISTRADO',
+    'EN_QA',
+    'APROBADO',
+    'EN_SORTING',
+    'EN_CAJA',
+    'EN_AUDITORIA',
+    'ENVIADO',
+];
 
 export default class RfidController extends AbstractController {
     private static _instance: RfidController;
@@ -48,18 +75,143 @@ export default class RfidController extends AbstractController {
 
     protected initRoutes(): void {
         this.router.get('/health', this.getHealth.bind(this));
+        this.router.get('/kpi', this.getKpi.bind(this));
         this.router.post('/lectura', this.postLectura.bind(this));
+        this.router.post('/bahia/scan', this.postBahiaScan.bind(this));
         this.router.post('/orden-compra', this.postCrearOrdenCompra.bind(this));
+        this.router.get('/orden/:orden_id/prepacks', this.getPrepacksDeOrden.bind(this));
+        this.router.post('/asignar-epc', this.postAsignarEpc.bind(this));
+        this.router.post('/uid-detectado', this.postUidDetectado.bind(this));
+    }
+
+    /**
+     * GET /rfid/kpi
+     * Métricas operativas del CEDIS calculadas en vivo desde la BD.
+     * Lo consume la barra superior de FlujoCEDIS.
+     *
+     * Devuelve:
+     *   - tiempo_promedio_min:        promedio de PaletEtapaLog.tiempo_ciclo_min de palets COMPLETADOS
+     *   - benchmark_manual_min:       referencia teórica de un proceso manual (constante)
+     *   - mejora_porcentaje:          (1 - tiempo_promedio / benchmark) * 100
+     *   - objetivo_mejora_pct:        meta del CEDIS (constante)
+     *   - palets_activos:             palets en ESPERANDO/EN_RECEPCION/EN_QA/EN_PACKING
+     *   - palets_completados_hoy:     palets que cerraron timestamp_salida hoy
+     *   - lecturas_hoy:               EventoLectura insertados hoy
+     *   - anomalias_abiertas:         Anomalia con resuelto=false
+     */
+    private async getKpi(_req: Request, res: Response): Promise<void> {
+        try {
+            const BENCHMARK_MANUAL_MIN = 480; // 8h de proceso manual de referencia
+            const OBJETIVO_MEJORA_PCT = 32;
+
+            const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+
+            // Tiempo promedio de palets completados (los que ya tienen tiempo_ciclo_min)
+            const [tiempoRows]: any = await db.sequelize.query(
+                `SELECT AVG(tiempo_ciclo_min) AS prom, COUNT(*) AS n
+                 FROM Palet WHERE estado='COMPLETADO' AND tiempo_ciclo_min IS NOT NULL`
+            );
+            const tiempoPromedio = tiempoRows?.[0]?.prom ? Math.round(Number(tiempoRows[0].prom)) : null;
+
+            const mejora = tiempoPromedio
+                ? Math.round(((BENCHMARK_MANUAL_MIN - tiempoPromedio) / BENCHMARK_MANUAL_MIN) * 1000) / 10
+                : null;
+
+            // Palets activos
+            const activos: number = await db.Palet.count({
+                where: { estado: ['ESPERANDO', 'EN_RECEPCION', 'EN_QA', 'EN_PACKING'] }
+            });
+
+            // Palets completados hoy
+            const completadosHoy: number = await db.Palet.count({
+                where: {
+                    estado: 'COMPLETADO',
+                    timestamp_salida: { [Op.gte]: hoy }
+                }
+            });
+
+            // Lecturas hoy
+            const lecturasHoy: number = await db.EventoLectura.count({
+                where: { timestamp: { [Op.gte]: hoy } }
+            });
+
+            // Anomalías abiertas
+            const anomaliasAbiertas: number = await db.Anomalia.count({
+                where: { resuelto: false }
+            });
+
+            res.status(200).json({
+                tiempo_promedio_min: tiempoPromedio,
+                benchmark_manual_min: BENCHMARK_MANUAL_MIN,
+                mejora_porcentaje: mejora,
+                objetivo_mejora_pct: OBJETIVO_MEJORA_PCT,
+                palets_activos: activos,
+                palets_completados_hoy: completadosHoy,
+                lecturas_hoy: lecturasHoy,
+                anomalias_abiertas: anomaliasAbiertas,
+                calculado_en: new Date().toISOString(),
+            });
+        } catch (err: any) {
+            console.error('[RfidController.getKpi]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
+    }
+
+    /**
+     * POST /rfid/uid-detectado
+     * Modo REGISTRO del ESP32: cuando un chip nuevo se acerca al "Lector 1"
+     * (el de registro), el ESP32 manda el UID aquí. Este endpoint NO escribe
+     * nada en BD — solo emite por Socket.IO un evento 'uid-detectado' que
+     * el frontend (modal "Asignar EPC") escucha para autocompletar el campo.
+     *
+     * Body: { uid: string, lector_id?: string }
+     * Respuesta 200: { ok: true, uid }
+     */
+    private async postUidDetectado(req: Request, res: Response): Promise<void> {
+        try {
+            const uid = typeof req.body?.uid === 'string' ? req.body.uid.trim() : '';
+            const lector_id = typeof req.body?.lector_id === 'string' ? req.body.lector_id.trim() : null;
+
+            if (!uid) {
+                res.status(400).json({
+                    error: 'campos_requeridos',
+                    message: 'uid es requerido',
+                });
+                return;
+            }
+
+            emit('uid-detectado', {
+                uid,
+                lector_id,
+                timestamp: new Date().toISOString(),
+            });
+
+            res.status(200).json({ ok: true, uid });
+        } catch (err: any) {
+            console.error('[RfidController.uidDetectado]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
     }
 
     /**
      * POST /rfid/orden-compra
-     * Endpoint conveniente para el módulo RFID: crea Pedido + OrdenCompra + Palet
-     * en una sola transacción con IDs autogenerados. Lo usa la pantalla
-     * Vinculación para que el supervisor cree una OC nueva sin salir de la UI.
+     * Crea TODO el contexto de una OC en una sola transacción:
+     *   - 1 Pedido
+     *   - 1 OrdenCompra
+     *   - N Palets (según numero_palets)
+     *   - 1 DetalleOrden por cada renglón del desglose
+     *   - M Tags pre-declarados (placeholders), uno por cada prepack esperado.
+     *     Cada Tag tiene EPC tipo 'PENDIENTE-{orden_id}-{n}' y los datos
+     *     del renglón (sku, talla, color, piezas, tienda).
      *
-     * Body: { proveedor_id, nombre_producto, modelo?, total_esperados }
-     * Respuesta 201: { pedido, ordenCompra, palet }
+     * Body: {
+     *   proveedor_id,
+     *   nombre_producto,
+     *   modelo?,
+     *   numero_palets?,
+     *   detalles: [{ sku, talla, color, piezas_por_prepack, cantidad, tienda_id }]
+     * }
+     * Respuesta 201: { pedido, ordenCompra, palets, detalles, prepacks }
      */
     private async postCrearOrdenCompra(req: Request, res: Response): Promise<void> {
         const t = await db.sequelize.transaction();
@@ -68,20 +220,35 @@ export default class RfidController extends AbstractController {
             const proveedor_id = body.proveedor_id;
             const nombre_producto = typeof body.nombre_producto === 'string' ? body.nombre_producto.trim() : '';
             const modelo = typeof body.modelo === 'string' ? body.modelo.trim() : null;
-            const total_esperados = Number(body.total_esperados) || 0;
+            const numero_palets = Math.max(1, Math.min(20, Number(body.numero_palets) || 1));
+            const detalles = Array.isArray(body.detalles) ? body.detalles : [];
 
+            // Validación de campos generales
             const faltantes: string[] = [];
             if (!proveedor_id) faltantes.push('proveedor_id');
             if (!nombre_producto) faltantes.push('nombre_producto');
-            if (total_esperados <= 0) faltantes.push('total_esperados (>0)');
+            if (detalles.length === 0) faltantes.push('detalles (al menos 1 renglón)');
             if (faltantes.length > 0) {
                 await t.rollback();
                 res.status(400).json({
                     error: 'campos_requeridos',
-                    message: `Faltan campos: ${faltantes.join(', ')}`,
+                    message: `Faltan: ${faltantes.join(', ')}`,
                     detalle: faltantes,
                 });
                 return;
+            }
+
+            // Validación de cada renglón
+            for (let i = 0; i < detalles.length; i++) {
+                const d = detalles[i];
+                if (!d.sku || !d.tienda_id || !Number(d.piezas_por_prepack) || !Number(d.cantidad)) {
+                    await t.rollback();
+                    res.status(400).json({
+                        error: 'detalle_invalido',
+                        message: `Renglón ${i + 1}: sku, tienda_id, piezas_por_prepack y cantidad son requeridos.`,
+                    });
+                    return;
+                }
             }
 
             const proveedor = await db.Proveedor.findByPk(proveedor_id, { transaction: t });
@@ -94,12 +261,28 @@ export default class RfidController extends AbstractController {
                 return;
             }
 
+            // Verificar que todas las tiendas referenciadas existan
+            const tiendaIds = [...new Set(detalles.map((d: any) => d.tienda_id))];
+            const tiendas = await db.Tienda.findAll({
+                where: { tienda_id: tiendaIds as string[] },
+                transaction: t,
+            });
+            if (tiendas.length !== tiendaIds.length) {
+                await t.rollback();
+                res.status(400).json({
+                    error: 'fk_invalida',
+                    message: `Una o más tiendas no existen: ${tiendaIds.join(', ')}`,
+                });
+                return;
+            }
+
             const ts = Date.now();
             const año = new Date().getFullYear();
             const sufijo = ts.toString().slice(-6);
             const pedido_id = `PED-${año}-${sufijo}`;
             const orden_id = `OC-${año}-${sufijo}`;
-            const palet_id = `PAL-${sufijo}`;
+
+            const total_esperados = detalles.reduce((acc: number, d: any) => acc + Number(d.cantidad), 0);
 
             const pedido = await db.Pedido.create({
                 pedido_id,
@@ -121,21 +304,192 @@ export default class RfidController extends AbstractController {
                 fecha_creacion: new Date(),
             }, { transaction: t });
 
-            const palet = await db.Palet.create({
-                palet_id,
-                pedido_id,
-                orden_id,
-                estado: 'ESPERANDO',
-                total_prepacks: 0,
-                creado_en: new Date(),
-            }, { transaction: t });
+            // N palets
+            const palets: any[] = [];
+            for (let i = 1; i <= numero_palets; i++) {
+                const palet_id = `PAL-${sufijo}-${i}`;
+                const palet = await db.Palet.create({
+                    palet_id,
+                    pedido_id,
+                    orden_id,
+                    estado: 'ESPERANDO',
+                    total_prepacks: Math.ceil(total_esperados / numero_palets),
+                    creado_en: new Date(),
+                }, { transaction: t });
+                palets.push(palet);
+            }
+
+            // DetalleOrden + Tags placeholder
+            const detallesCreados: any[] = [];
+            const prepacks: any[] = [];
+            let globalIdx = 0;
+
+            for (const d of detalles) {
+                const cantidad = Number(d.cantidad);
+                const piezas = Number(d.piezas_por_prepack);
+
+                const detalle = await db.DetalleOrden.create({
+                    orden_id,
+                    sku: d.sku,
+                    talla: d.talla || null,
+                    color: d.color || null,
+                    cantidad: piezas * cantidad,
+                }, { transaction: t });
+                detallesCreados.push(detalle);
+
+                // Pre-crear los Tags placeholder
+                for (let i = 0; i < cantidad; i++) {
+                    globalIdx++;
+                    const epc = `PENDIENTE-${orden_id}-${String(globalIdx).padStart(4, '0')}`;
+                    const palet = palets[(globalIdx - 1) % palets.length]; // round-robin
+                    const tag = await db.Tag.create({
+                        epc,
+                        sku: d.sku,
+                        talla: d.talla || null,
+                        color: d.color || null,
+                        cantidad_piezas: piezas,
+                        proveedor_id,
+                        tienda_id: d.tienda_id,
+                        palet_id: palet.palet_id,
+                        pedido_id,
+                        tipo_flujo: 'CROSS_DOCK',
+                        etapa_actual: 'REGISTRADO',
+                        qa_fallido: false,
+                        registrado_en: new Date(),
+                    }, { transaction: t });
+                    prepacks.push(tag);
+                }
+            }
 
             await t.commit();
-            res.status(201).json({ pedido, ordenCompra, palet });
+            res.status(201).json({
+                pedido,
+                ordenCompra,
+                palets,
+                detalles: detallesCreados,
+                prepacks,
+                total_prepacks: prepacks.length,
+            });
         } catch (err: any) {
             await t.rollback();
             console.error('[RfidController.crearOrdenCompra]', err);
             res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear orden de compra' });
+        }
+    }
+
+    /**
+     * GET /rfid/orden/:orden_id/prepacks
+     * Devuelve todos los Tags asociados a una OC (vía Palet.orden_id), separados
+     * en pendientes (EPC tipo PENDIENTE-*) y asignados (con EPC real).
+     */
+    private async getPrepacksDeOrden(req: Request, res: Response): Promise<void> {
+        try {
+            const orden_id = req.params['orden_id'];
+            const palets: any[] = await db.Palet.findAll({ where: { orden_id } });
+            if (palets.length === 0) {
+                res.status(404).json({ error: 'no_encontrado', message: 'OC sin palets' });
+                return;
+            }
+            const paletIds = palets.map((p: any) => p.palet_id);
+            const tags: any[] = await db.Tag.findAll({
+                where: { palet_id: paletIds },
+                include: [
+                    { model: db.Tienda, attributes: ['tienda_id', 'nombre', 'bahia_asignada'] },
+                ],
+                order: [['epc', 'ASC']],
+            });
+
+            const pendientes = tags.filter((t: any) => String(t.epc).startsWith('PENDIENTE-'));
+            const asignados = tags.filter((t: any) => !String(t.epc).startsWith('PENDIENTE-'));
+
+            res.status(200).json({
+                orden_id,
+                total: tags.length,
+                pendientes_count: pendientes.length,
+                asignados_count: asignados.length,
+                pendientes,
+                asignados,
+            });
+        } catch (err: any) {
+            console.error('[RfidController.getPrepacksDeOrden]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
+    }
+
+    /**
+     * POST /rfid/asignar-epc
+     * Body: { epc_placeholder, epc_real }
+     * Cambia el EPC de un Tag pre-declarado al EPC real leído del chip RFID.
+     * Sequelize emite UPDATE; FKs en cascada actualizan EventoLectura,
+     * Anomalia, PrepackCaja e InspeccionQA si hubiera (no debería todavía,
+     * el tag no había generado lecturas porque era placeholder).
+     */
+    private async postAsignarEpc(req: Request, res: Response): Promise<void> {
+        try {
+            const epc_placeholder = String(req.body?.epc_placeholder || '').trim();
+            const epc_real = String(req.body?.epc_real || '').trim();
+
+            if (!epc_placeholder || !epc_real) {
+                res.status(400).json({
+                    error: 'campos_requeridos',
+                    message: 'epc_placeholder y epc_real son requeridos.',
+                });
+                return;
+            }
+            if (!epc_placeholder.startsWith('PENDIENTE-')) {
+                res.status(400).json({
+                    error: 'placeholder_invalido',
+                    message: 'epc_placeholder debe empezar con "PENDIENTE-".',
+                });
+                return;
+            }
+            if (epc_real.startsWith('PENDIENTE-')) {
+                res.status(400).json({
+                    error: 'epc_invalido',
+                    message: 'El EPC real no puede empezar con "PENDIENTE-".',
+                });
+                return;
+            }
+
+            const tag: any = await db.Tag.findByPk(epc_placeholder);
+            if (!tag) {
+                res.status(404).json({ error: 'no_encontrado', message: 'Prepack pendiente no existe.' });
+                return;
+            }
+
+            // ¿El EPC real ya está en uso?
+            const conflicto = await db.Tag.findByPk(epc_real);
+            if (conflicto) {
+                res.status(409).json({
+                    error: 'epc_duplicado',
+                    message: `Ya existe un tag con EPC "${epc_real}".`,
+                });
+                return;
+            }
+
+            // Sequelize ignora cambios a la PK con .update(). Usamos UPDATE
+            // directo para que el cambio se propague (ON UPDATE CASCADE
+            // se encarga de FKs hacia tag.epc en EventoLectura/Anomalia/etc.).
+            await db.sequelize.query(
+                'UPDATE `Tag` SET `epc` = :epcNuevo WHERE `epc` = :epcViejo',
+                { replacements: { epcNuevo: epc_real, epcViejo: epc_placeholder } }
+            );
+
+            const tagActualizado: any = await db.Tag.findByPk(epc_real, {
+                include: [{ model: db.Tienda, attributes: ['tienda_id', 'nombre', 'bahia_asignada'] }],
+            });
+
+            // Emit por socket para que las pantallas refresquen el listado
+            emit('prepack-asignado', {
+                epc_anterior: epc_placeholder,
+                epc_nuevo: epc_real,
+                tag: tagActualizado,
+            });
+
+            res.status(200).json({ message: 'EPC asignado correctamente', tag: tagActualizado });
+        } catch (err: any) {
+            console.error('[RfidController.asignarEpc]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
         }
     }
 
@@ -148,12 +502,180 @@ export default class RfidController extends AbstractController {
     }
 
     /**
+     * POST /rfid/bahia/scan
+     * Arco RFID post-sorter: recibe el EPC que ya cayÃ³ en una bahÃ­a fÃ­sica y
+     * resuelve de forma determinÃ­stica a quÃ© caja (1..3) debe ir.
+     */
+    private async postBahiaScan(req: Request, res: Response): Promise<void> {
+        const t = await db.sequelize.transaction();
+        try {
+            const body = req.body || {};
+            const epc = typeof body.epc === 'string' ? body.epc.trim() : '';
+            const bahiaActual = this.normalizarBahiaActual(body.bahiaActual);
+
+            const faltantes: string[] = [];
+            if (!epc) faltantes.push('epc');
+            if (bahiaActual === null) faltantes.push('bahiaActual');
+            if (faltantes.length > 0) {
+                await t.rollback();
+                res.status(400).json({
+                    error: 'campos_requeridos',
+                    message: `Faltan campos: ${faltantes.join(', ')}`,
+                    detalle: faltantes,
+                });
+                return;
+            }
+            const bahia = bahiaActual as number;
+
+            let tag: any = await db.Tag.findByPk(epc, {
+                include: [
+                    { model: db.Tienda, attributes: ['tienda_id', 'nombre', 'ciudad', 'bahia_asignada'] },
+                    {
+                        model: db.Palet,
+                        required: false,
+                        include: [{ model: db.OrdenCompra, required: false }],
+                    },
+                ],
+                transaction: t,
+            });
+
+            if (!tag) {
+                tag = await this.crearTagDesdeScan(body, epc, t);
+                if (!tag) {
+                    await t.rollback();
+                    res.status(404).json({
+                        error: 'tag_no_encontrado',
+                        message: 'El EPC no existe. Para alta automÃ¡tica manda sku, proveedor_id y tienda_id vÃ¡lidos.',
+                    });
+                    return;
+                }
+            }
+
+            const tienda = tag.Tienda || await db.Tienda.findByPk(tag.tienda_id, {
+                attributes: ['tienda_id', 'nombre', 'ciudad', 'bahia_asignada'],
+                transaction: t,
+            });
+            if (!tienda) {
+                await t.rollback();
+                res.status(400).json({
+                    error: 'fk_invalida',
+                    message: `Tienda ${tag.tienda_id} no existe`,
+                    detalle: 'tienda_id',
+                });
+                return;
+            }
+
+            const cajaDestino = await this.resolverCajaDestino(tag, bahia, t);
+            const cajaId = this.buildCajaId(bahia, cajaDestino, tag.tienda_id);
+            const ahora = new Date();
+
+            await db.Caja.findOrCreate({
+                where: { caja_id: cajaId },
+                defaults: {
+                    caja_id: cajaId,
+                    tienda_id: tag.tienda_id,
+                    bahia: this.formatBahia(bahia),
+                    estado: 'EN_LLENADO',
+                    timestamp_creacion: ahora,
+                },
+                transaction: t,
+            });
+
+            const vinculacionExistente: any = await db.PrepackCaja.findOne({
+                where: { epc },
+                order: [['timestamp_vinculacion', 'DESC']],
+                transaction: t,
+            });
+            if (!vinculacionExistente) {
+                await db.PrepackCaja.create({
+                    epc,
+                    caja_id: cajaId,
+                    timestamp_vinculacion: ahora,
+                    es_correcto: true,
+                }, { transaction: t });
+            }
+
+            const lectura: any = await db.EventoLectura.create({
+                epc,
+                lector_id: `ARCO-BAHIA-${bahia}`,
+                bahia: this.formatBahia(bahia),
+                timestamp: ahora,
+                etapa: 'PACKING',
+                rssi: typeof body.rssi === 'number' ? body.rssi : null,
+                antenna_port: typeof body.antenna_port === 'string' ? body.antenna_port : null,
+                es_duplicado: false,
+            }, { transaction: t });
+
+            if (tag.etapa_actual !== 'RECHAZADO' && tag.etapa_actual !== 'ENVIADO') {
+                await tag.update({ etapa_actual: 'EN_CAJA' }, { transaction: t });
+            }
+
+            const ordenCompra = tag.Palet?.OrdenCompra || null;
+            const response = {
+                epc: tag.epc,
+                bahiaActual: bahia,
+                cajaDestino,
+                orden_id: tag.Palet?.orden_id || ordenCompra?.orden_id || null,
+                producto: ordenCompra?.nombre_producto || tag.sku,
+                tienda: {
+                    tienda_id: tienda.tienda_id,
+                    nombre: tienda.nombre,
+                    ciudad: tienda.ciudad,
+                },
+                timestamp: ahora.toISOString(),
+            };
+
+            await t.commit();
+
+            const socketPayload = {
+                ...response,
+                caja_id: cajaId,
+                lectura_id: lectura.id,
+                tag: {
+                    epc: tag.epc,
+                    sku: tag.sku,
+                    talla: tag.talla,
+                    color: tag.color,
+                    cantidad_piezas: tag.cantidad_piezas,
+                    tienda_id: tag.tienda_id,
+                    palet_id: tag.palet_id,
+                    pedido_id: tag.pedido_id,
+                    etapa_actual: 'EN_CAJA',
+                },
+            };
+            emit('sorter-caja-scan', socketPayload);
+            emit('lectura', {
+                id: lectura.id,
+                epc: tag.epc,
+                lector_id: lectura.lector_id,
+                bahia: lectura.bahia,
+                etapa: lectura.etapa,
+                timestamp: lectura.timestamp,
+                rssi: lectura.rssi,
+                antenna_port: lectura.antenna_port,
+                es_duplicado: false,
+                tag: socketPayload.tag,
+            });
+
+            res.status(200).json(response);
+        } catch (err: any) {
+            await t.rollback();
+            console.error('[RfidController.bahiaScan]', err);
+            res.status(500).json({
+                error: 'error_interno',
+                message: err.message || 'Error procesando scan de bahÃ­a',
+            });
+        }
+    }
+
+    /**
      * POST /rfid/lectura
      * Body esperado del ESP32:
      *   {
      *     epc: string,           // EPC leído del tag (requerido)
      *     lector_id: string,     // id del sensor que leyó (requerido)
-     *     etapa: string,         // RECEPCION | QA | SORTING | PACKING | SALIDA (requerido)
+     *     etapa: string,         // RECEPCION | QA | REGISTRO | SORTING |
+     *                            //   PACKING | AUDITORIA | SALIDA (requerido)
      *     bahia?: string,        // id de bahía/zona física, ej "BAHIA-3"
      *     rssi?: number,         // intensidad de señal
      *     antenna_port?: string
@@ -188,7 +710,7 @@ export default class RfidController extends AbstractController {
             if (!ETAPA_A_ESTADO_PREPACK[etapa as string]) {
                 res.status(400).json({
                     error: 'etapa_invalida',
-                    message: `Etapa "${etapa}" no es válida. Usa: RECEPCION, QA, SORTING, PACKING, SALIDA.`,
+                    message: `Etapa "${etapa}" no es válida. Usa: RECEPCION, QA, REGISTRO, SORTING, EMPAQUETADO, PACKING, AUDITORIA, SALIDA.`,
                 });
                 return;
             }
@@ -198,7 +720,14 @@ export default class RfidController extends AbstractController {
 
             // 2) Buscar el tag
             const tag: any = await db.Tag.findByPk(epc, {
-                include: [{ model: db.Tienda, attributes: ['tienda_id', 'nombre', 'bahia_asignada'] }],
+                include: [
+                    { model: db.Tienda, attributes: ['tienda_id', 'nombre', 'ciudad', 'bahia_asignada'] },
+                    {
+                        model: db.Palet,
+                        required: false,
+                        include: [{ model: db.OrdenCompra, required: false }],
+                    },
+                ],
             });
 
             // 2a) Si no existe → TAG_DESCONOCIDO. Igual registramos la lectura.
@@ -245,7 +774,7 @@ export default class RfidController extends AbstractController {
             }
 
             // 4) Validación de bahía (sólo en PACKING / SORTING)
-            if ((etapa === 'PACKING' || etapa === 'SORTING') && bahia && tag.Tienda?.bahia_asignada) {
+            if ((etapa === 'PACKING' || etapa === 'EMPAQUETADO' || etapa === 'SORTING') && bahia && tag.Tienda?.bahia_asignada) {
                 if (bahia !== tag.Tienda.bahia_asignada) {
                     const anom = await this.crearAnomalia({
                         epc, lector_id, bahia, etapa,
@@ -314,13 +843,44 @@ export default class RfidController extends AbstractController {
                 tag: {
                     epc: tag.epc,
                     sku: tag.sku,
+                    talla: tag.talla,
+                    color: tag.color,
+                    cantidad_piezas: tag.cantidad_piezas,
                     tienda_id: tag.tienda_id,
                     tienda: tag.Tienda,
+                    palet_id: tag.palet_id,
+                    pedido_id: tag.pedido_id,
+                    orden_id: tag.Palet?.orden_id || tag.Palet?.OrdenCompra?.orden_id || null,
+                    producto: tag.Palet?.OrdenCompra?.nombre_producto || tag.sku,
+                    tipo_flujo: tag.tipo_flujo,
                     etapa_actual: etapaCambio ? nuevoEstado : etapaAnterior,
                     qa_fallido: tag.qa_fallido,
                 },
             };
             emit('lectura', lecturaPayload);
+
+            if (etapa === 'SORTING') {
+                emit('sorter-scan', {
+                    lectura_id: lectura.id,
+                    epc,
+                    lector_id,
+                    bahia,
+                    etapa,
+                    timestamp: lectura.timestamp,
+                    rssi,
+                    tag: lecturaPayload.tag,
+                    prepack: {
+                        epc,
+                        orden_id: lecturaPayload.tag.orden_id || lecturaPayload.tag.pedido_id || null,
+                        producto: lecturaPayload.tag.producto || lecturaPayload.tag.sku || 'Prepack sin detalle',
+                        proveedor: null,
+                        tienda: lecturaPayload.tag.tienda || null,
+                        tipo_flujo: lecturaPayload.tag.tipo_flujo || null,
+                        qa_fallido: !!lecturaPayload.tag.qa_fallido,
+                        tag: lecturaPayload.tag,
+                    },
+                });
+            }
 
             for (const a of anomaliasGeneradas) {
                 emit('anomalia', a);
@@ -363,5 +923,94 @@ export default class RfidController extends AbstractController {
             descripcion: data.descripcion || null,
         });
         return anom;
+    }
+
+    private normalizarBahiaActual(raw: any): number | null {
+        if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1) return raw;
+        if (typeof raw === 'string') {
+            const match = raw.trim().match(/(\d+)\s*$/);
+            if (!match) return null;
+            const n = parseInt(match[1] || '', 10);
+            return Number.isFinite(n) && n >= 1 ? n : null;
+        }
+        return null;
+    }
+
+    private formatBahia(bahiaActual: number): string {
+        return `BAHIA-${bahiaActual}`;
+    }
+
+    private buildCajaId(bahiaActual: number, cajaDestino: number, tiendaId: string): string {
+        return `BAHIA-${bahiaActual}-CAJA-${cajaDestino}-${tiendaId}`;
+    }
+
+    private parseCajaDestino(cajaId: string): number | null {
+        const match = String(cajaId || '').match(/CAJA-(\d+)/);
+        if (!match) return null;
+        const n = parseInt(match[1] || '', 10);
+        return Number.isFinite(n) && n >= 1 && n <= 3 ? n : null;
+    }
+
+    private async resolverCajaDestino(tag: any, bahiaActual: number, transaction: any): Promise<number> {
+        const vinculacion: any = await db.PrepackCaja.findOne({
+            where: { epc: tag.epc },
+            order: [['timestamp_vinculacion', 'DESC']],
+            transaction,
+        });
+        const cajaExistente = this.parseCajaDestino(vinculacion?.caja_id);
+        if (cajaExistente) return cajaExistente;
+
+        return this.cajaDeterministicaPorTienda(tag.tienda_id, bahiaActual);
+    }
+
+    private cajaDeterministicaPorTienda(tiendaId: string, bahiaActual: number): number {
+        const source = `${tiendaId || ''}:${bahiaActual}`;
+        let hash = 0;
+        for (let i = 0; i < source.length; i++) {
+            hash = ((hash << 5) - hash) + source.charCodeAt(i);
+            hash |= 0;
+        }
+        return (Math.abs(hash) % 3) + 1;
+    }
+
+    private async crearTagDesdeScan(body: any, epc: string, transaction: any): Promise<any | null> {
+        const sku = typeof body.sku === 'string' ? body.sku.trim() : '';
+        const proveedor_id = body.proveedor_id;
+        const tienda_id = typeof body.tienda_id === 'string' ? body.tienda_id.trim() : '';
+        if (!sku || !proveedor_id || !tienda_id) return null;
+
+        const [proveedor, tienda] = await Promise.all([
+            db.Proveedor.findByPk(proveedor_id, { transaction }),
+            db.Tienda.findByPk(tienda_id, { transaction }),
+        ]);
+        if (!proveedor || !tienda) return null;
+
+        await db.Tag.create({
+            epc,
+            sku,
+            talla: typeof body.talla === 'string' ? body.talla.trim() : null,
+            color: typeof body.color === 'string' ? body.color.trim() : null,
+            cantidad_piezas: Number(body.cantidad_piezas) || 1,
+            proveedor_id,
+            tienda_id,
+            palet_id: body.palet_id || null,
+            pedido_id: body.pedido_id || null,
+            tipo_flujo: body.tipo_flujo || 'CROSS_DOCK',
+            etapa_actual: 'APROBADO',
+            qa_fallido: false,
+            registrado_en: new Date(),
+        }, { transaction });
+
+        return db.Tag.findByPk(epc, {
+            include: [
+                { model: db.Tienda, attributes: ['tienda_id', 'nombre', 'ciudad', 'bahia_asignada'] },
+                {
+                    model: db.Palet,
+                    required: false,
+                    include: [{ model: db.OrdenCompra, required: false }],
+                },
+            ],
+            transaction,
+        });
     }
 }

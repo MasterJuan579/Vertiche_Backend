@@ -34,8 +34,10 @@ export enum EstadoPrepack{
     REGISTRADO = 'REGISTRADO',
     EN_QA = 'EN_QA',
     APROBADO = 'APROBADO',
-    RECHAZADO = 'RECHAZADO',
+    EN_SORTING = 'EN_SORTING',
     EN_CAJA = 'EN_CAJA',
+    EN_AUDITORIA = 'EN_AUDITORIA',
+    RECHAZADO = 'RECHAZADO',
     ENVIADO = 'ENVIADO'
 }
 
