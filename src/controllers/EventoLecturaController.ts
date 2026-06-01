@@ -83,10 +83,11 @@ export default class EventoLecturaController extends AbstractController {
             console.log(req.body);
             await db['EventoLectura'].create(req.body);
             res.status(200).json({ message: "Registro de lectura exitoso" });
-        } catch (err: any) {
-            console.error('[EventoLecturaController.crearLectura]', err);
-            res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear lectura' });
-        }
+        } 
+        // catch (err: any) {
+        //     console.error('[EventoLecturaController.crearLectura]', err);
+        //     res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear lectura' });
+        // }
     }
 
     private async markTagInSorting(tag: any): Promise<void> {
