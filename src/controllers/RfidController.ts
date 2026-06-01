@@ -3,8 +3,23 @@
  * ──────────────────────────────────────────────────────────────────────────
  *  MÓDULO RFID — Responsable: team-rfid (Moisés Falcón).
  *  Otros equipos: por favor NO modifiquen este archivo sin coordinar.
+ *
+ *  Endpoints expuestos:
+ *    GET  /rfid/health                      — ping del módulo
+ *    GET  /rfid/kpi                         — KPIs en vivo del CEDIS (lo
+ *                                              consume FlujoCEDIS)
+ *    POST /rfid/lectura                     — endpoint smart del ESP32
+ *                                              (detecta anomalías + avanza
+ *                                              etapa + emite socket)
+ *    POST /rfid/uid-detectado               — modo registro del ESP32
+ *                                              (emite socket 'uid-detectado')
+ *    POST /rfid/orden-compra                — crea OC completa con N palets
+ *                                              + M tags placeholder
+ *    GET  /rfid/orden/:orden_id/prepacks    — lista prepacks pendientes/asign.
+ *    POST /rfid/asignar-epc                 — cambia EPC placeholder a real
+ *
  *  Contrato con el hardware ESP32 documentado en docs/rfid_lectura_contrato.md.
- *  Resumen del módulo: docs/RFID_MODULE.md.
+ *  Resumen del módulo: docs/RFID_MODULE.md y API_GUIDE.md sección 9.
  * ──────────────────────────────────────────────────────────────────────────
  * Descripción: Endpoint inteligente que recibe lecturas RFID desde los
  *              lectores físicos (ESP32 + módulo RFID) y orquesta:
@@ -48,18 +63,142 @@ export default class RfidController extends AbstractController {
 
     protected initRoutes(): void {
         this.router.get('/health', this.getHealth.bind(this));
+        this.router.get('/kpi', this.getKpi.bind(this));
         this.router.post('/lectura', this.postLectura.bind(this));
         this.router.post('/orden-compra', this.postCrearOrdenCompra.bind(this));
+        this.router.get('/orden/:orden_id/prepacks', this.getPrepacksDeOrden.bind(this));
+        this.router.post('/asignar-epc', this.postAsignarEpc.bind(this));
+        this.router.post('/uid-detectado', this.postUidDetectado.bind(this));
+    }
+
+    /**
+     * GET /rfid/kpi
+     * Métricas operativas del CEDIS calculadas en vivo desde la BD.
+     * Lo consume la barra superior de FlujoCEDIS.
+     *
+     * Devuelve:
+     *   - tiempo_promedio_min:        promedio de PaletEtapaLog.tiempo_ciclo_min de palets COMPLETADOS
+     *   - benchmark_manual_min:       referencia teórica de un proceso manual (constante)
+     *   - mejora_porcentaje:          (1 - tiempo_promedio / benchmark) * 100
+     *   - objetivo_mejora_pct:        meta del CEDIS (constante)
+     *   - palets_activos:             palets en ESPERANDO/EN_RECEPCION/EN_QA/EN_PACKING
+     *   - palets_completados_hoy:     palets que cerraron timestamp_salida hoy
+     *   - lecturas_hoy:               EventoLectura insertados hoy
+     *   - anomalias_abiertas:         Anomalia con resuelto=false
+     */
+    private async getKpi(_req: Request, res: Response): Promise<void> {
+        try {
+            const BENCHMARK_MANUAL_MIN = 480; // 8h de proceso manual de referencia
+            const OBJETIVO_MEJORA_PCT = 32;
+
+            const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+
+            // Tiempo promedio de palets completados (los que ya tienen tiempo_ciclo_min)
+            const [tiempoRows]: any = await db.sequelize.query(
+                `SELECT AVG(tiempo_ciclo_min) AS prom, COUNT(*) AS n
+                 FROM Palet WHERE estado='COMPLETADO' AND tiempo_ciclo_min IS NOT NULL`
+            );
+            const tiempoPromedio = tiempoRows?.[0]?.prom ? Math.round(Number(tiempoRows[0].prom)) : null;
+
+            const mejora = tiempoPromedio
+                ? Math.round(((BENCHMARK_MANUAL_MIN - tiempoPromedio) / BENCHMARK_MANUAL_MIN) * 1000) / 10
+                : null;
+
+            // Palets activos
+            const activos: number = await db.Palet.count({
+                where: { estado: ['ESPERANDO', 'EN_RECEPCION', 'EN_QA', 'EN_PACKING'] }
+            });
+
+            // Palets completados hoy
+            const completadosHoy: number = await db.Palet.count({
+                where: {
+                    estado: 'COMPLETADO',
+                    timestamp_salida: { [Op.gte]: hoy }
+                }
+            });
+
+            // Lecturas hoy
+            const lecturasHoy: number = await db.EventoLectura.count({
+                where: { timestamp: { [Op.gte]: hoy } }
+            });
+
+            // Anomalías abiertas
+            const anomaliasAbiertas: number = await db.Anomalia.count({
+                where: { resuelto: false }
+            });
+
+            res.status(200).json({
+                tiempo_promedio_min: tiempoPromedio,
+                benchmark_manual_min: BENCHMARK_MANUAL_MIN,
+                mejora_porcentaje: mejora,
+                objetivo_mejora_pct: OBJETIVO_MEJORA_PCT,
+                palets_activos: activos,
+                palets_completados_hoy: completadosHoy,
+                lecturas_hoy: lecturasHoy,
+                anomalias_abiertas: anomaliasAbiertas,
+                calculado_en: new Date().toISOString(),
+            });
+        } catch (err: any) {
+            console.error('[RfidController.getKpi]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
+    }
+
+    /**
+     * POST /rfid/uid-detectado
+     * Modo REGISTRO del ESP32: cuando un chip nuevo se acerca al "Lector 1"
+     * (el de registro), el ESP32 manda el UID aquí. Este endpoint NO escribe
+     * nada en BD — solo emite por Socket.IO un evento 'uid-detectado' que
+     * el frontend (modal "Asignar EPC") escucha para autocompletar el campo.
+     *
+     * Body: { uid: string, lector_id?: string }
+     * Respuesta 200: { ok: true, uid }
+     */
+    private async postUidDetectado(req: Request, res: Response): Promise<void> {
+        try {
+            const uid = typeof req.body?.uid === 'string' ? req.body.uid.trim() : '';
+            const lector_id = typeof req.body?.lector_id === 'string' ? req.body.lector_id.trim() : null;
+
+            if (!uid) {
+                res.status(400).json({
+                    error: 'campos_requeridos',
+                    message: 'uid es requerido',
+                });
+                return;
+            }
+
+            emit('uid-detectado', {
+                uid,
+                lector_id,
+                timestamp: new Date().toISOString(),
+            });
+
+            res.status(200).json({ ok: true, uid });
+        } catch (err: any) {
+            console.error('[RfidController.uidDetectado]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
     }
 
     /**
      * POST /rfid/orden-compra
-     * Endpoint conveniente para el módulo RFID: crea Pedido + OrdenCompra + Palet
-     * en una sola transacción con IDs autogenerados. Lo usa la pantalla
-     * Vinculación para que el supervisor cree una OC nueva sin salir de la UI.
+     * Crea TODO el contexto de una OC en una sola transacción:
+     *   - 1 Pedido
+     *   - 1 OrdenCompra
+     *   - N Palets (según numero_palets)
+     *   - 1 DetalleOrden por cada renglón del desglose
+     *   - M Tags pre-declarados (placeholders), uno por cada prepack esperado.
+     *     Cada Tag tiene EPC tipo 'PENDIENTE-{orden_id}-{n}' y los datos
+     *     del renglón (sku, talla, color, piezas, tienda).
      *
-     * Body: { proveedor_id, nombre_producto, modelo?, total_esperados }
-     * Respuesta 201: { pedido, ordenCompra, palet }
+     * Body: {
+     *   proveedor_id,
+     *   nombre_producto,
+     *   modelo?,
+     *   numero_palets?,
+     *   detalles: [{ sku, talla, color, piezas_por_prepack, cantidad, tienda_id }]
+     * }
+     * Respuesta 201: { pedido, ordenCompra, palets, detalles, prepacks }
      */
     private async postCrearOrdenCompra(req: Request, res: Response): Promise<void> {
         const t = await db.sequelize.transaction();
@@ -68,20 +207,35 @@ export default class RfidController extends AbstractController {
             const proveedor_id = body.proveedor_id;
             const nombre_producto = typeof body.nombre_producto === 'string' ? body.nombre_producto.trim() : '';
             const modelo = typeof body.modelo === 'string' ? body.modelo.trim() : null;
-            const total_esperados = Number(body.total_esperados) || 0;
+            const numero_palets = Math.max(1, Math.min(20, Number(body.numero_palets) || 1));
+            const detalles = Array.isArray(body.detalles) ? body.detalles : [];
 
+            // Validación de campos generales
             const faltantes: string[] = [];
             if (!proveedor_id) faltantes.push('proveedor_id');
             if (!nombre_producto) faltantes.push('nombre_producto');
-            if (total_esperados <= 0) faltantes.push('total_esperados (>0)');
+            if (detalles.length === 0) faltantes.push('detalles (al menos 1 renglón)');
             if (faltantes.length > 0) {
                 await t.rollback();
                 res.status(400).json({
                     error: 'campos_requeridos',
-                    message: `Faltan campos: ${faltantes.join(', ')}`,
+                    message: `Faltan: ${faltantes.join(', ')}`,
                     detalle: faltantes,
                 });
                 return;
+            }
+
+            // Validación de cada renglón
+            for (let i = 0; i < detalles.length; i++) {
+                const d = detalles[i];
+                if (!d.sku || !d.tienda_id || !Number(d.piezas_por_prepack) || !Number(d.cantidad)) {
+                    await t.rollback();
+                    res.status(400).json({
+                        error: 'detalle_invalido',
+                        message: `Renglón ${i + 1}: sku, tienda_id, piezas_por_prepack y cantidad son requeridos.`,
+                    });
+                    return;
+                }
             }
 
             const proveedor = await db.Proveedor.findByPk(proveedor_id, { transaction: t });
@@ -94,12 +248,28 @@ export default class RfidController extends AbstractController {
                 return;
             }
 
+            // Verificar que todas las tiendas referenciadas existan
+            const tiendaIds = [...new Set(detalles.map((d: any) => d.tienda_id))];
+            const tiendas = await db.Tienda.findAll({
+                where: { tienda_id: tiendaIds as string[] },
+                transaction: t,
+            });
+            if (tiendas.length !== tiendaIds.length) {
+                await t.rollback();
+                res.status(400).json({
+                    error: 'fk_invalida',
+                    message: `Una o más tiendas no existen: ${tiendaIds.join(', ')}`,
+                });
+                return;
+            }
+
             const ts = Date.now();
             const año = new Date().getFullYear();
             const sufijo = ts.toString().slice(-6);
             const pedido_id = `PED-${año}-${sufijo}`;
             const orden_id = `OC-${año}-${sufijo}`;
-            const palet_id = `PAL-${sufijo}`;
+
+            const total_esperados = detalles.reduce((acc: number, d: any) => acc + Number(d.cantidad), 0);
 
             const pedido = await db.Pedido.create({
                 pedido_id,
@@ -121,21 +291,192 @@ export default class RfidController extends AbstractController {
                 fecha_creacion: new Date(),
             }, { transaction: t });
 
-            const palet = await db.Palet.create({
-                palet_id,
-                pedido_id,
-                orden_id,
-                estado: 'ESPERANDO',
-                total_prepacks: 0,
-                creado_en: new Date(),
-            }, { transaction: t });
+            // N palets
+            const palets: any[] = [];
+            for (let i = 1; i <= numero_palets; i++) {
+                const palet_id = `PAL-${sufijo}-${i}`;
+                const palet = await db.Palet.create({
+                    palet_id,
+                    pedido_id,
+                    orden_id,
+                    estado: 'ESPERANDO',
+                    total_prepacks: Math.ceil(total_esperados / numero_palets),
+                    creado_en: new Date(),
+                }, { transaction: t });
+                palets.push(palet);
+            }
+
+            // DetalleOrden + Tags placeholder
+            const detallesCreados: any[] = [];
+            const prepacks: any[] = [];
+            let globalIdx = 0;
+
+            for (const d of detalles) {
+                const cantidad = Number(d.cantidad);
+                const piezas = Number(d.piezas_por_prepack);
+
+                const detalle = await db.DetalleOrden.create({
+                    orden_id,
+                    sku: d.sku,
+                    talla: d.talla || null,
+                    color: d.color || null,
+                    cantidad: piezas * cantidad,
+                }, { transaction: t });
+                detallesCreados.push(detalle);
+
+                // Pre-crear los Tags placeholder
+                for (let i = 0; i < cantidad; i++) {
+                    globalIdx++;
+                    const epc = `PENDIENTE-${orden_id}-${String(globalIdx).padStart(4, '0')}`;
+                    const palet = palets[(globalIdx - 1) % palets.length]; // round-robin
+                    const tag = await db.Tag.create({
+                        epc,
+                        sku: d.sku,
+                        talla: d.talla || null,
+                        color: d.color || null,
+                        cantidad_piezas: piezas,
+                        proveedor_id,
+                        tienda_id: d.tienda_id,
+                        palet_id: palet.palet_id,
+                        pedido_id,
+                        tipo_flujo: 'CROSS_DOCK',
+                        etapa_actual: 'REGISTRADO',
+                        qa_fallido: false,
+                        registrado_en: new Date(),
+                    }, { transaction: t });
+                    prepacks.push(tag);
+                }
+            }
 
             await t.commit();
-            res.status(201).json({ pedido, ordenCompra, palet });
+            res.status(201).json({
+                pedido,
+                ordenCompra,
+                palets,
+                detalles: detallesCreados,
+                prepacks,
+                total_prepacks: prepacks.length,
+            });
         } catch (err: any) {
             await t.rollback();
             console.error('[RfidController.crearOrdenCompra]', err);
             res.status(500).json({ error: 'error_interno', message: err.message || 'Error al crear orden de compra' });
+        }
+    }
+
+    /**
+     * GET /rfid/orden/:orden_id/prepacks
+     * Devuelve todos los Tags asociados a una OC (vía Palet.orden_id), separados
+     * en pendientes (EPC tipo PENDIENTE-*) y asignados (con EPC real).
+     */
+    private async getPrepacksDeOrden(req: Request, res: Response): Promise<void> {
+        try {
+            const orden_id = req.params['orden_id'];
+            const palets: any[] = await db.Palet.findAll({ where: { orden_id } });
+            if (palets.length === 0) {
+                res.status(404).json({ error: 'no_encontrado', message: 'OC sin palets' });
+                return;
+            }
+            const paletIds = palets.map((p: any) => p.palet_id);
+            const tags: any[] = await db.Tag.findAll({
+                where: { palet_id: paletIds },
+                include: [
+                    { model: db.Tienda, attributes: ['tienda_id', 'nombre', 'bahia_asignada'] },
+                ],
+                order: [['epc', 'ASC']],
+            });
+
+            const pendientes = tags.filter((t: any) => String(t.epc).startsWith('PENDIENTE-'));
+            const asignados = tags.filter((t: any) => !String(t.epc).startsWith('PENDIENTE-'));
+
+            res.status(200).json({
+                orden_id,
+                total: tags.length,
+                pendientes_count: pendientes.length,
+                asignados_count: asignados.length,
+                pendientes,
+                asignados,
+            });
+        } catch (err: any) {
+            console.error('[RfidController.getPrepacksDeOrden]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
+    }
+
+    /**
+     * POST /rfid/asignar-epc
+     * Body: { epc_placeholder, epc_real }
+     * Cambia el EPC de un Tag pre-declarado al EPC real leído del chip RFID.
+     * Sequelize emite UPDATE; FKs en cascada actualizan EventoLectura,
+     * Anomalia, PrepackCaja e InspeccionQA si hubiera (no debería todavía,
+     * el tag no había generado lecturas porque era placeholder).
+     */
+    private async postAsignarEpc(req: Request, res: Response): Promise<void> {
+        try {
+            const epc_placeholder = String(req.body?.epc_placeholder || '').trim();
+            const epc_real = String(req.body?.epc_real || '').trim();
+
+            if (!epc_placeholder || !epc_real) {
+                res.status(400).json({
+                    error: 'campos_requeridos',
+                    message: 'epc_placeholder y epc_real son requeridos.',
+                });
+                return;
+            }
+            if (!epc_placeholder.startsWith('PENDIENTE-')) {
+                res.status(400).json({
+                    error: 'placeholder_invalido',
+                    message: 'epc_placeholder debe empezar con "PENDIENTE-".',
+                });
+                return;
+            }
+            if (epc_real.startsWith('PENDIENTE-')) {
+                res.status(400).json({
+                    error: 'epc_invalido',
+                    message: 'El EPC real no puede empezar con "PENDIENTE-".',
+                });
+                return;
+            }
+
+            const tag: any = await db.Tag.findByPk(epc_placeholder);
+            if (!tag) {
+                res.status(404).json({ error: 'no_encontrado', message: 'Prepack pendiente no existe.' });
+                return;
+            }
+
+            // ¿El EPC real ya está en uso?
+            const conflicto = await db.Tag.findByPk(epc_real);
+            if (conflicto) {
+                res.status(409).json({
+                    error: 'epc_duplicado',
+                    message: `Ya existe un tag con EPC "${epc_real}".`,
+                });
+                return;
+            }
+
+            // Sequelize ignora cambios a la PK con .update(). Usamos UPDATE
+            // directo para que el cambio se propague (ON UPDATE CASCADE
+            // se encarga de FKs hacia tag.epc en EventoLectura/Anomalia/etc.).
+            await db.sequelize.query(
+                'UPDATE `Tag` SET `epc` = :epcNuevo WHERE `epc` = :epcViejo',
+                { replacements: { epcNuevo: epc_real, epcViejo: epc_placeholder } }
+            );
+
+            const tagActualizado: any = await db.Tag.findByPk(epc_real, {
+                include: [{ model: db.Tienda, attributes: ['tienda_id', 'nombre', 'bahia_asignada'] }],
+            });
+
+            // Emit por socket para que las pantallas refresquen el listado
+            emit('prepack-asignado', {
+                epc_anterior: epc_placeholder,
+                epc_nuevo: epc_real,
+                tag: tagActualizado,
+            });
+
+            res.status(200).json({ message: 'EPC asignado correctamente', tag: tagActualizado });
+        } catch (err: any) {
+            console.error('[RfidController.asignarEpc]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
         }
     }
 

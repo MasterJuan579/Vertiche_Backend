@@ -5,7 +5,22 @@
  *  Responsable: team-rfid. Otros equipos pueden suscribirse a los eventos
  *  desde sus propios módulos, pero por favor no modifiquen este archivo
  *  sin coordinar con team-rfid.
- *  Ver docs/RFID_MODULE.md sección "Eventos Socket.IO".
+ *
+ *  Eventos que emiten distintos controllers:
+ *    'lectura'              → emitido por RfidController.postLectura
+ *    'anomalia'             → emitido por RfidController + InspeccionQAController
+ *    'tag'                  → emitido por RfidController + InspeccionQAController
+ *    'uid-detectado'        → emitido por RfidController.postUidDetectado
+ *    'prepack-asignado'     → emitido por RfidController.postAsignarEpc
+ *    'proveedor-actualizado'→ emitido por InspeccionQAController al recalcular
+ *                              stats del proveedor (lo consume team-proveedores)
+ *
+ *  Cliente:
+ *    import { io } from 'socket.io-client';
+ *    const socket = io(BASE_URL);
+ *    socket.on('proveedor-actualizado', (data) => { ... });
+ *
+ *  Ver API_GUIDE.md sección 9.11 para el shape completo de cada payload.
  * ──────────────────────────────────────────────────────────────────────────
  * Descripción: Singleton del servidor Socket.IO.
  *              Se inicializa una sola vez en Server.init() y cualquier

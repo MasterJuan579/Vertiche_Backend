@@ -714,3 +714,364 @@ await eliminar('Caja', 'CJA-001');
 | `Data truncated for column ... at row 1`               | Valor de enum mal escrito                      | Verifica enums exactos en sección 5               |
 | 404 al hacer GET/:id                                   | El registro no existe                          | Lista primero para ver IDs válidos                |
 | `ER_DUP_ENTRY`                                         | Intentaste crear con PK o campo único repetido | Usa otro valor o haz PUT para actualizar          |
+
+---
+
+## 9. Extensiones del módulo RFID
+
+> **Mantenido por:** team-rfid (Moisés Falcón).
+> Esta sección documenta endpoints, eventos Socket.IO y comportamientos añadidos por el módulo RFID. **No reemplaza** las secciones 1–8, las extiende. Los CRUD planos siguen funcionando exactamente como dicen las secciones 5.1 a 5.13.
+
+### 9.1. Convenciones específicas del módulo RFID
+
+- **Socket.IO** corre en el mismo puerto que la API REST (8080). El cliente se conecta con `io(BASE_URL)`.
+- **Shape de error enriquecido** para todos los endpoints `/rfid/*` y para los endpoints CRUD que el módulo RFID endureció con validaciones (`/Tag/crearTag`, `/Anomalia/:id/resolver`):
+
+  ```json
+  { "error": "<código_máquina>", "message": "<mensaje_humano>", "detalle": "<info_extra>" }
+  ```
+
+  Códigos posibles: `campos_requeridos`, `fk_invalida`, `epc_duplicado`, `validacion`, `no_encontrado`, `etapa_invalida`, `placeholder_invalido`, `error_interno`.
+
+- **Estados HTTP** que añade el módulo:
+  - `201 Created` — al crear con éxito desde `/rfid/orden-compra` y `POST /Tag/crearTag`.
+  - `202 Accepted` — cuando `POST /rfid/lectura` procesa una lectura de un EPC desconocido (igual la registra y crea anomalía).
+  - `409 Conflict` — al crear un Tag con EPC duplicado o asignar un EPC ya usado.
+
+---
+
+### 9.2. `GET /rfid/health`
+
+Health check del módulo. Útil para el ESP32 antes de empezar a enviar lecturas.
+
+**Response 200:**
+```json
+{ "ok": true, "ts": "2026-05-31T18:30:00.000Z" }
+```
+
+---
+
+### 9.2.1. `GET /rfid/kpi`
+
+KPIs operativos del CEDIS calculados en vivo desde la BD. Lo consume la
+barra superior de la pantalla FlujoCEDIS del módulo RFID, pero **cualquier
+módulo puede usarlo** si necesita estos números (Dashboard, por ejemplo).
+
+**Response 200:**
+```json
+{
+  "tiempo_promedio_min": 345,
+  "benchmark_manual_min": 480,
+  "mejora_porcentaje": 28.1,
+  "objetivo_mejora_pct": 32,
+  "palets_activos": 7,
+  "palets_completados_hoy": 3,
+  "lecturas_hoy": 142,
+  "anomalias_abiertas": 5,
+  "calculado_en": "2026-06-01T03:15:00.000Z"
+}
+```
+
+Campos:
+- `tiempo_promedio_min`: promedio de `PaletEtapaLog.tiempo_ciclo_min` sobre
+  palets `COMPLETADO`. `null` si no hay palets completados todavía.
+- `benchmark_manual_min`: referencia teórica del proceso manual (480 min = 8h).
+- `mejora_porcentaje`: `(benchmark - tiempo_promedio) / benchmark * 100`.
+- `objetivo_mejora_pct`: meta del CEDIS (32%).
+- `palets_activos`: palets en `ESPERANDO`/`EN_RECEPCION`/`EN_QA`/`EN_PACKING`.
+- `palets_completados_hoy`: palets con `timestamp_salida >= 00:00 hoy`.
+- `lecturas_hoy`: EventoLectura insertados hoy.
+- `anomalias_abiertas`: Anomalia con `resuelto = false`.
+
+---
+
+### 9.3. `POST /rfid/lectura` (endpoint smart del ESP32 — etapa)
+
+Recibe lecturas del lector físico cuando un prepack pasa por un sensor de etapa. Detecta anomalías automáticamente y actualiza `Tag.etapa_actual`.
+
+| Campo | Tipo | Obligatorio | Notas |
+|---|---|---|---|
+| `epc` | string | SÍ | UID del chip RFID |
+| `lector_id` | string | SÍ | Convención: `ESP32-<ETAPA>-<NUM>` |
+| `etapa` | enum | SÍ | `RECEPCION`, `QA`, `SORTING`, `PACKING`, `SALIDA` |
+| `bahia` | string | NO | Obligatorio si esperas validación de bahía |
+| `rssi` | number | NO | dBm; si < `-75` genera anomalía `RSSI_BAJO` |
+| `antenna_port` | string | NO | |
+
+**Body ejemplo:**
+```json
+{
+  "epc": "13:3F:D5:05",
+  "lector_id": "ESP32-QA-01",
+  "etapa": "QA",
+  "bahia": "ZONA-QA",
+  "rssi": -62.5,
+  "antenna_port": "1"
+}
+```
+
+**Response 200 (camino feliz):**
+```json
+{
+  "lectura": { "id": 26, "epc": "13:3F:D5:05", "etapa": "QA", "timestamp": "...", "es_duplicado": false, "tag": { ... } },
+  "anomalias": [],
+  "tag": { "epc": "13:3F:D5:05", "etapa_actual": "EN_QA", "qa_fallido": false },
+  "etapaAnterior": "REGISTRADO",
+  "etapaNueva": "EN_QA"
+}
+```
+
+**Response 202 (EPC desconocido):**
+```json
+{
+  "message": "Lectura recibida pero el EPC no existe en el sistema. Anomalía registrada.",
+  "anomalias": [{ "id": 17, "tipo_error": "TAG_DESCONOCIDO", ... }],
+  "tag": null
+}
+```
+
+**Detección automática de anomalías:**
+
+| Tipo | Cuándo se dispara |
+|---|---|
+| `TAG_DESCONOCIDO` | El `epc` del request no existe en `Tag`. |
+| `LECTURA_DUPLICADA` | Mismo `epc` + `lector_id` en los últimos 5 segundos. |
+| `BAHIA_INCORRECTA` | `etapa` es `PACKING`/`SORTING` y `bahia` ≠ `tag.tienda.bahia_asignada`. |
+| `RSSI_BAJO` | `rssi < -75`. |
+
+**Mapeo de etapa a `Tag.etapa_actual`:**
+
+| Etapa lectura | Estado del prepack resultante |
+|---|---|
+| `RECEPCION` | `REGISTRADO` |
+| `QA` | `EN_QA` |
+| `SORTING` | `APROBADO` |
+| `PACKING` | `EN_CAJA` |
+| `SALIDA` | `ENVIADO` |
+
+Reglas: el estado **no retrocede**; tags `RECHAZADO` no avanzan; lecturas duplicadas no avanzan estado.
+
+---
+
+### 9.4. `POST /rfid/uid-detectado` (modo registro del ESP32)
+
+Cuando el ESP32 (Lector 1 = modo registro) detecta un chip nuevo, envía solo el UID. El backend **no escribe en BD**, solo emite el evento Socket.IO `'uid-detectado'` para que el frontend (modal de Vinculación) autocomplete el campo EPC.
+
+| Campo | Tipo | Obligatorio |
+|---|---|---|
+| `uid` | string | SÍ |
+| `lector_id` | string | NO |
+
+**Body ejemplo:**
+```json
+{ "uid": "13:3F:D5:05", "lector_id": "ESP32-REGISTRO-01" }
+```
+
+**Response 200:**
+```json
+{ "ok": true, "uid": "13:3F:D5:05" }
+```
+
+---
+
+### 9.5. `POST /rfid/orden-compra` (crear OC completa con desglose)
+
+Crea en una sola transacción: `Pedido` + `OrdenCompra` + N `Palet` + M `DetalleOrden` + K `Tag` placeholder (uno por cada prepack esperado).
+
+Cada Tag placeholder se crea con `epc = "PENDIENTE-<orden_id>-<n>"`, `etapa_actual = "REGISTRADO"` y todos los datos del renglón (sku, talla, color, piezas, tienda).
+
+| Campo | Tipo | Obligatorio | Notas |
+|---|---|---|---|
+| `proveedor_id` | number | SÍ | FK Proveedor |
+| `nombre_producto` | string | SÍ | |
+| `modelo` | string | NO | |
+| `numero_palets` | number | NO (default 1) | Máximo 20 |
+| `detalles` | array | SÍ | Mínimo 1 renglón, cada uno con: |
+| · `sku` | string | SÍ | |
+| · `talla` | string | NO | |
+| · `color` | string | NO | |
+| · `piezas_por_prepack` | number | SÍ | |
+| · `cantidad` | number | SÍ | # de prepacks de este tipo |
+| · `tienda_id` | string | SÍ | FK Tienda |
+
+**Body ejemplo:**
+```json
+{
+  "proveedor_id": 1,
+  "nombre_producto": "Playera básica algodón",
+  "modelo": "PLY-V1",
+  "numero_palets": 2,
+  "detalles": [
+    { "sku": "PLY-001", "talla": "M", "color": "Azul", "piezas_por_prepack": 12, "cantidad": 5, "tienda_id": "TDA-001" },
+    { "sku": "PLY-001", "talla": "L", "color": "Azul", "piezas_por_prepack": 12, "cantidad": 3, "tienda_id": "TDA-002" }
+  ]
+}
+```
+
+**Response 201:**
+```json
+{
+  "pedido": { "pedido_id": "PED-2026-123456", ... },
+  "ordenCompra": { "orden_id": "OC-2026-123456", "total_esperados": 8, ... },
+  "palets": [{ "palet_id": "PAL-123456-1" }, { "palet_id": "PAL-123456-2" }],
+  "detalles": [...],
+  "prepacks": [{ "epc": "PENDIENTE-OC-2026-123456-0001", ... }, ...],
+  "total_prepacks": 8
+}
+```
+
+---
+
+### 9.6. `GET /rfid/orden/:orden_id/prepacks`
+
+Lista los prepacks de una OC, separados por estado.
+
+**Response 200:**
+```json
+{
+  "orden_id": "OC-2026-123456",
+  "total": 8,
+  "pendientes_count": 5,
+  "asignados_count": 3,
+  "pendientes": [{ "epc": "PENDIENTE-OC-2026-123456-0001", "sku": "...", "Tienda": {...} }, ...],
+  "asignados":  [{ "epc": "13:3F:D5:05", "sku": "...", "Tienda": {...} }, ...]
+}
+```
+
+Un Tag se considera "pendiente" si su `epc` empieza con `PENDIENTE-`.
+
+---
+
+### 9.7. `POST /rfid/asignar-epc`
+
+Reasigna el EPC de un Tag placeholder a un EPC real (el que se leyó con el ESP32).
+Internamente hace `UPDATE Tag SET epc = epc_real WHERE epc = epc_placeholder`. Los FKs con `ON UPDATE CASCADE` propagan el cambio a `EventoLectura`, `Anomalia`, `PrepackCaja` e `InspeccionQA`.
+
+| Campo | Tipo | Obligatorio | Notas |
+|---|---|---|---|
+| `epc_placeholder` | string | SÍ | Debe empezar con `PENDIENTE-` |
+| `epc_real` | string | SÍ | No puede empezar con `PENDIENTE-` |
+
+**Body ejemplo:**
+```json
+{ "epc_placeholder": "PENDIENTE-OC-2026-123456-0001", "epc_real": "13:3F:D5:05" }
+```
+
+**Response 200:**
+```json
+{ "message": "EPC asignado correctamente", "tag": { "epc": "13:3F:D5:05", ... } }
+```
+
+**Errores específicos:**
+- `404 no_encontrado` — el placeholder no existe.
+- `409 epc_duplicado` — el `epc_real` ya está en uso.
+- `400 placeholder_invalido` — el `epc_placeholder` no empieza con `PENDIENTE-`.
+- `400 epc_invalido` — el `epc_real` empieza con `PENDIENTE-` (no permitido).
+
+Tras éxito emite Socket.IO `'prepack-asignado'`.
+
+---
+
+### 9.8. `PATCH /Anomalia/:id/resolver`
+
+Atajo semántico para marcar una anomalía como resuelta. Equivalente a `PUT /Anomalia/:id` con `{ resuelto: true }`, pero más explícito.
+
+**Response 200:**
+```json
+{ "message": "Anomalía resuelta", "anomalia": { "id": 17, "resuelto": true, ... } }
+```
+
+Errores: `404 no_encontrado`.
+
+---
+
+### 9.9. `GET /Tag/buscarSku/:sku`
+
+Búsqueda de tags por SKU con `LIKE` (insensible a mayúsculas). Útil para Trazabilidad.
+
+**Request:**
+```
+GET /Tag/buscarSku/PLY
+```
+
+**Response 200:** array de tags (mismo shape que `GET /Tag/listarTags`).
+
+---
+
+### 9.10. Endpoints CRUD endurecidos
+
+El módulo RFID reforzó varios endpoints del catálogo de la sección 5 con validaciones extra. **Los contratos base no cambiaron**, solo se agregaron validaciones y campos enriquecidos en la respuesta.
+
+#### `POST /Tag/crearTag`
+- Valida que `epc`, `sku`, `proveedor_id` y `tienda_id` estén presentes.
+- Verifica que `proveedor_id` y `tienda_id` existan antes de insertar (no espera a que MySQL tire FK error).
+- Devuelve **201** con `{ message, tag: { ...con Proveedor, Tienda, Palet incluidos... } }`.
+- En vez de `500 SequelizeUniqueConstraintError` devuelve `409 epc_duplicado` con mensaje claro.
+
+#### `GET /Tag/listarTags`
+- Query params opcionales:
+  - `?limit=N` — limita el número de resultados.
+  - `?order=campo:asc|desc` — ordena. Campos permitidos: `registrado_en`, `createdAt`, `updatedAt`, `epc`, `sku`.
+- Cada tag incluye `Proveedor`, `Tienda` y `Palet` (con `orden_id`) anidados.
+
+#### `GET /Tag/:id`
+- Incluye `Proveedor`, `Tienda`, `Palet` y además:
+  - `ultimas_lecturas`: últimas 50 lecturas de `EventoLectura`, orden desc por timestamp.
+  - `anomalias_pendientes`: anomalías abiertas (resuelto=false).
+
+#### `POST /InspeccionQA/crearInspeccion`
+- Sin cambios en el body. Pero **si `resultado === "RECHAZADO"`** dispara efectos colaterales:
+  - Setea `tag.qa_fallido = true`, `tag.etapa_actual = "RECHAZADO"`.
+  - Crea automáticamente una `Anomalia` `QA_FALLIDO` ligada a ese tag.
+  - Emite por Socket.IO los eventos `'tag'` y `'anomalia'`.
+- Response incluye los efectos: `{ message, inspeccion, anomalia?, tagActualizado? }`.
+
+#### `GET /Palet/listarPalets`
+- Cada palet incluye `OrdenCompra` (orden_id, nombre_producto, estado) anidado para que el frontend pueda mostrar `"PAL-001 — Playera básica (OC-2026-001)"`.
+
+---
+
+### 9.11. Eventos Socket.IO
+
+El cliente se conecta con `socket.io-client`:
+
+```javascript
+import { io } from 'socket.io-client';
+const socket = io('http://localhost:8080'); // misma URL que la API REST
+
+socket.on('lectura', (ev) => { ... });
+socket.on('anomalia', (anom) => { ... });
+socket.on('tag', (cambio) => { ... });
+socket.on('uid-detectado', (data) => { ... });
+socket.on('prepack-asignado', (data) => { ... });
+```
+
+| Evento | Cuándo lo emite el backend | Payload |
+|---|---|---|
+| `lectura` | Cada vez que `POST /rfid/lectura` procesa una (incluso duplicadas). | `{ id, epc, lector_id, bahia, etapa, timestamp, rssi, es_duplicado, tag: {...} }` |
+| `anomalia` | Cada anomalía generada, sea automática (en `/rfid/lectura`) o por `POST /InspeccionQA/crearInspeccion` con RECHAZADO. | `{ id, epc, tipo_error, etapa, bahia, lector_id, timestamp, descripcion, resuelto: false, proveedor_id }` |
+| `tag` | Cuando un Tag cambia de `etapa_actual` o pasa a `qa_fallido=true`. | `{ epc, etapa_actual, etapaAnterior?, qa_fallido? }` |
+| `uid-detectado` | Cuando llega `POST /rfid/uid-detectado` (Lector 1 del ESP32 en modo registro). | `{ uid, lector_id, timestamp }` |
+| `prepack-asignado` | Cuando `POST /rfid/asignar-epc` actualiza el EPC de un placeholder. | `{ epc_anterior, epc_nuevo, tag: {...} }` |
+| `proveedor-actualizado` | Cuando `POST /InspeccionQA/crearInspeccion` termina y el backend recalcula stats del proveedor. **Para team-proveedores** — suscríbete para refrescar el rating sin polling. | `{ id, stars, level, approval_rate, defect_rate, total_deliveries }` |
+
+#### Casos de uso para los otros equipos
+
+- **Dashboard**: suscríbete a `lectura` y `anomalia` para gráficas en vivo sin necesidad de polling. Cada evento contiene el tag enriquecido para que no haya que pedir `GET /Tag/:id`. Considera `GET /rfid/kpi` para tu barra de métricas si quieres reutilizar el cálculo del CEDIS.
+- **Sorter**: suscríbete a `tag` (etapa cambió) para refrescar la vista de bahía cuando un prepack avanza.
+- **Proveedores**: dos eventos útiles —
+  - `anomalia` filtrando por `proveedor_id` para alertar cuando llega un QA_FALLIDO de uno de los tuyos.
+  - `proveedor-actualizado` para refrescar las estrellas/level/defect_rate del proveedor sin tener que hacer polling al endpoint de proveedores. El payload trae los campos ya recalculados.
+
+---
+
+### 9.12. Contrato resumido para el ESP32
+
+El sketch Arduino debe usar **estos endpoints**:
+
+| Lector físico | Endpoint | JSON que manda |
+|---|---|---|
+| Modo REGISTRO (Lector 1) | `POST /rfid/uid-detectado` | `{ "uid": "...", "lector_id": "ESP32-REGISTRO-01" }` |
+| Modo LECTURA DE ETAPA (Lector 2…N) | `POST /rfid/lectura` | `{ "epc": "...", "lector_id": "ESP32-<ETAPA>-<NUM>", "etapa": "...", "bahia": "...", "rssi": -62 }` |
+
+El endpoint viejo `POST /EventoLectura/crearLectura` (sección 5.9) **sigue funcionando** y crea filas planas en `EventoLectura`, pero **no** dispara la lógica smart (anomalías, avance de Tag, socket). Para el ESP32 nuevo usa siempre `/rfid/lectura`.
