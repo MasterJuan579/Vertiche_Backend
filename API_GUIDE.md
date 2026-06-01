@@ -308,7 +308,7 @@ A continuación cada recurso con: campos, tipos, si es obligatorio, defaults, y 
 | palet_id         | string    | NO          |             | FK a Palet.palet_id                                              |
 | pedido_id        | string    | NO          |             | FK a Pedido.pedido_id                                            |
 | tipo_flujo       | enum      | NO          | CROSS_DOCK  | `CROSS_DOCK`, `ALMACENAJE`, `DEVOLUCION`                         |
-| etapa_actual     | enum      | NO          | REGISTRADO  | `REGISTRADO`, `EN_QA`, `APROBADO`, `RECHAZADO`, `EN_CAJA`, `ENVIADO` |
+| etapa_actual     | enum      | NO          | REGISTRADO  | `REGISTRADO`, `EN_QA`, `APROBADO`, `EN_SORTING`, `EN_CAJA`, `EN_AUDITORIA`, `RECHAZADO`, `ENVIADO` |
 | qa_fallido       | boolean   | NO          | false       |                                                                  |
 | registrado_en    | datetime  | SÍ          | NOW         |                                                                  |
 
@@ -344,7 +344,7 @@ A continuación cada recurso con: campos, tipos, si es obligatorio, defaults, y 
 |--------------------|-----------|-------------|---------|--------------------------------------------------|
 | id                 | number    | NO (auto)   |         |                                                  |
 | palet_id           | string    | SÍ          |         | FK a Palet                                       |
-| etapa              | enum      | SÍ          |         | `RECEPCION`, `QA`, `SORTING`, `PACKING`, `SALIDA` |
+| etapa              | enum      | SÍ          |         | `RECEPCION`, `QA`, `REGISTRO`, `SORTING`, `PACKING`, `AUDITORIA`, `SALIDA` |
 | timestamp_entrada  | datetime  | SÍ          | NOW     |                                                  |
 | timestamp_salida   | datetime  | NO          |         |                                                  |
 | prepacks_entrada   | number    | NO          | 0       |                                                  |
@@ -381,7 +381,7 @@ A continuación cada recurso con: campos, tipos, si es obligatorio, defaults, y 
 | lector_id     | string    | SÍ          |         |                                                  |
 | bahia         | string    | SÍ          |         |                                                  |
 | timestamp     | datetime  | SÍ          | NOW     |                                                  |
-| etapa         | enum      | SÍ          |         | `RECEPCION`, `QA`, `SORTING`, `PACKING`, `SALIDA` |
+| etapa         | enum      | SÍ          |         | `RECEPCION`, `QA`, `REGISTRO`, `SORTING`, `PACKING`, `AUDITORIA`, `SALIDA` |
 | rssi          | number    | NO          |         | Float                                            |
 | antenna_port  | string    | NO          |         |                                                  |
 | es_duplicado  | boolean   | NO          | false   |                                                  |
@@ -512,7 +512,7 @@ A continuación cada recurso con: campos, tipos, si es obligatorio, defaults, y 
 | tipo_error    | enum      | SÍ          |         | `TAG_DESCONOCIDO`, `LECTURA_DUPLICADA`, `BAHIA_INCORRECTA`, `TIENDA_INCORRECTA`, `QA_FALLIDO`, `PALET_INCOMPLETO`, `RSSI_BAJO`, `FUERA_DE_SECUENCIA` |
 | lector_id     | string    | NO          |         |                                                                                                              |
 | bahia         | string    | NO          |         |                                                                                                              |
-| etapa         | enum      | SÍ          |         | `RECEPCION`, `QA`, `SORTING`, `PACKING`, `SALIDA`                                                            |
+| etapa         | enum      | SÍ          |         | `RECEPCION`, `QA`, `REGISTRO`, `SORTING`, `PACKING`, `AUDITORIA`, `SALIDA`                                                            |
 | timestamp     | datetime  | SÍ          | NOW     |                                                                                                              |
 | proveedor_id  | number    | NO          |         | FK a Proveedor.id                                                                                            |
 | resuelto      | boolean   | NO          | false   |                                                                                                              |
@@ -793,7 +793,7 @@ Recibe lecturas del lector físico cuando un prepack pasa por un sensor de etapa
 |---|---|---|---|
 | `epc` | string | SÍ | UID del chip RFID |
 | `lector_id` | string | SÍ | Convención: `ESP32-<ETAPA>-<NUM>` |
-| `etapa` | enum | SÍ | `RECEPCION`, `QA`, `SORTING`, `PACKING`, `SALIDA` |
+| `etapa` | enum | SÍ | `RECEPCION`, `QA`, `REGISTRO`, `SORTING`, `PACKING`, `AUDITORIA`, `SALIDA` |
 | `bahia` | string | NO | Obligatorio si esperas validación de bahía |
 | `rssi` | number | NO | dBm; si < `-75` genera anomalía `RSSI_BAJO` |
 | `antenna_port` | string | NO | |
@@ -841,15 +841,17 @@ Recibe lecturas del lector físico cuando un prepack pasa por un sensor de etapa
 
 **Mapeo de etapa a `Tag.etapa_actual`:**
 
-| Etapa lectura | Estado del prepack resultante |
-|---|---|
-| `RECEPCION` | `REGISTRADO` |
-| `QA` | `EN_QA` |
-| `SORTING` | `APROBADO` |
-| `PACKING` | `EN_CAJA` |
-| `SALIDA` | `ENVIADO` |
+| Etapa lectura | Estado del prepack resultante | Columna del Gantt |
+|---|---|---|
+| `RECEPCION` | `REGISTRADO`   | PRE-REG     |
+| `QA`        | `EN_QA`        | QA          |
+| `REGISTRO`  | `APROBADO`     | REGISTRO    |
+| `SORTING`   | `EN_SORTING`   | SORTER      |
+| `PACKING`   | `EN_CAJA`      | BAHIA       |
+| `AUDITORIA` | `EN_AUDITORIA` | AUDITORIA   |
+| `SALIDA`    | `ENVIADO`      | ENVIO       |
 
-Reglas: el estado **no retrocede**; tags `RECHAZADO` no avanzan; lecturas duplicadas no avanzan estado.
+Cada etapa tiene un lector RFID físico (7 lectores en total). Reglas: el estado **no retrocede**; tags `RECHAZADO` no avanzan; lecturas duplicadas no avanzan estado.
 
 ---
 
