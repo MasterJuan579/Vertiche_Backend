@@ -882,6 +882,63 @@ export default class RfidController extends AbstractController {
                 });
             }
 
+            if (etapa === 'EMPAQUETADO') {
+                const bahiaActual = this.normalizarBahiaActual(bahia) ||
+                    this.normalizarBahiaActual(tag.Tienda?.bahia_asignada);
+
+                if (bahiaActual) {
+                    const cajaDestino = await this.resolverCajaDestino(tag, bahiaActual, undefined);
+                    const cajaId = this.buildCajaId(bahiaActual, cajaDestino, tag.tienda_id);
+                    const timestamp = lectura.timestamp || new Date();
+
+                    await db.Caja.findOrCreate({
+                        where: { caja_id: cajaId },
+                        defaults: {
+                            caja_id: cajaId,
+                            tienda_id: tag.tienda_id,
+                            bahia: this.formatBahia(bahiaActual),
+                            estado: 'EN_LLENADO',
+                            timestamp_creacion: timestamp,
+                        },
+                    });
+
+                    const vinculacionExistente: any = await db.PrepackCaja.findOne({
+                        where: { epc },
+                        order: [['timestamp_vinculacion', 'DESC']],
+                    });
+                    if (!vinculacionExistente) {
+                        await db.PrepackCaja.create({
+                            epc,
+                            caja_id: cajaId,
+                            timestamp_vinculacion: timestamp,
+                            es_correcto: true,
+                        });
+                    }
+
+                    emit('sorter-caja-scan', {
+                        lectura_id: lectura.id,
+                        epc,
+                        lector_id,
+                        bahia: this.formatBahia(bahiaActual),
+                        etapa,
+                        timestamp,
+                        rssi,
+                        caja_id: cajaId,
+                        cajaDestino,
+                        bahiaActual,
+                        orden_id: lecturaPayload.tag.orden_id || lecturaPayload.tag.pedido_id || null,
+                        producto: lecturaPayload.tag.producto || lecturaPayload.tag.sku || 'Prepack sin detalle',
+                        tienda: lecturaPayload.tag.tienda || null,
+                        tag: {
+                            ...lecturaPayload.tag,
+                            etapa_actual: 'EN_CAJA',
+                        },
+                    });
+                } else {
+                    console.warn(`[RfidController.postLectura] No se pudo resolver bahía para EMPAQUETADO epc=${epc}`);
+                }
+            }
+
             for (const a of anomaliasGeneradas) {
                 emit('anomalia', a);
             }
