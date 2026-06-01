@@ -48,11 +48,85 @@ export default class RfidController extends AbstractController {
 
     protected initRoutes(): void {
         this.router.get('/health', this.getHealth.bind(this));
+        this.router.get('/kpi', this.getKpi.bind(this));
         this.router.post('/lectura', this.postLectura.bind(this));
         this.router.post('/orden-compra', this.postCrearOrdenCompra.bind(this));
         this.router.get('/orden/:orden_id/prepacks', this.getPrepacksDeOrden.bind(this));
         this.router.post('/asignar-epc', this.postAsignarEpc.bind(this));
         this.router.post('/uid-detectado', this.postUidDetectado.bind(this));
+    }
+
+    /**
+     * GET /rfid/kpi
+     * Métricas operativas del CEDIS calculadas en vivo desde la BD.
+     * Lo consume la barra superior de FlujoCEDIS.
+     *
+     * Devuelve:
+     *   - tiempo_promedio_min:        promedio de PaletEtapaLog.tiempo_ciclo_min de palets COMPLETADOS
+     *   - benchmark_manual_min:       referencia teórica de un proceso manual (constante)
+     *   - mejora_porcentaje:          (1 - tiempo_promedio / benchmark) * 100
+     *   - objetivo_mejora_pct:        meta del CEDIS (constante)
+     *   - palets_activos:             palets en ESPERANDO/EN_RECEPCION/EN_QA/EN_PACKING
+     *   - palets_completados_hoy:     palets que cerraron timestamp_salida hoy
+     *   - lecturas_hoy:               EventoLectura insertados hoy
+     *   - anomalias_abiertas:         Anomalia con resuelto=false
+     */
+    private async getKpi(_req: Request, res: Response): Promise<void> {
+        try {
+            const BENCHMARK_MANUAL_MIN = 480; // 8h de proceso manual de referencia
+            const OBJETIVO_MEJORA_PCT = 32;
+
+            const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+
+            // Tiempo promedio de palets completados (los que ya tienen tiempo_ciclo_min)
+            const [tiempoRows]: any = await db.sequelize.query(
+                `SELECT AVG(tiempo_ciclo_min) AS prom, COUNT(*) AS n
+                 FROM Palet WHERE estado='COMPLETADO' AND tiempo_ciclo_min IS NOT NULL`
+            );
+            const tiempoPromedio = tiempoRows?.[0]?.prom ? Math.round(Number(tiempoRows[0].prom)) : null;
+
+            const mejora = tiempoPromedio
+                ? Math.round(((BENCHMARK_MANUAL_MIN - tiempoPromedio) / BENCHMARK_MANUAL_MIN) * 1000) / 10
+                : null;
+
+            // Palets activos
+            const activos: number = await db.Palet.count({
+                where: { estado: ['ESPERANDO', 'EN_RECEPCION', 'EN_QA', 'EN_PACKING'] }
+            });
+
+            // Palets completados hoy
+            const completadosHoy: number = await db.Palet.count({
+                where: {
+                    estado: 'COMPLETADO',
+                    timestamp_salida: { [Op.gte]: hoy }
+                }
+            });
+
+            // Lecturas hoy
+            const lecturasHoy: number = await db.EventoLectura.count({
+                where: { timestamp: { [Op.gte]: hoy } }
+            });
+
+            // Anomalías abiertas
+            const anomaliasAbiertas: number = await db.Anomalia.count({
+                where: { resuelto: false }
+            });
+
+            res.status(200).json({
+                tiempo_promedio_min: tiempoPromedio,
+                benchmark_manual_min: BENCHMARK_MANUAL_MIN,
+                mejora_porcentaje: mejora,
+                objetivo_mejora_pct: OBJETIVO_MEJORA_PCT,
+                palets_activos: activos,
+                palets_completados_hoy: completadosHoy,
+                lecturas_hoy: lecturasHoy,
+                anomalias_abiertas: anomaliasAbiertas,
+                calculado_en: new Date().toISOString(),
+            });
+        } catch (err: any) {
+            console.error('[RfidController.getKpi]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
     }
 
     /**
