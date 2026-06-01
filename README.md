@@ -33,7 +33,7 @@ This backend uses a 3-branch CI/CD pipeline:
 | `staging` | Integration / pre-prod testing | DEV EC2 — `http://52.4.219.206:8080` |
 | `prod` | Production | PROD EC2 — `http://3.221.34.193:8080` |
 
-### Workflow
+### Workflow test
 
 1. Pull latest dev: `git checkout dev && git pull`
 2. Make your changes
