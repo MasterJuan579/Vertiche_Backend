@@ -31,7 +31,7 @@ Endpoint pensado para que el lector RFID físico (ESP32 + módulo RFID) reporte 
 |---|---|---|---|
 | `epc` | string | sí | EPC leído del tag RFID. |
 | `lector_id` | string | sí | Identificador del sensor/ESP32. Convención: `ESP32-<ETAPA>-<NUM>`. |
-| `etapa` | string | sí | Una de `RECEPCION`, `QA`, `SORTING`, `PACKING`, `SALIDA`. |
+| `etapa` | string | sí | Una de `RECEPCION`, `QA`, `REGISTRO`, `SORTING`, `PACKING`, `AUDITORIA`, `SALIDA`. |
 | `bahia` | string | no | Identificador de la bahía/zona física donde está el sensor (ej. `BAHIA-3`). Obligatorio si esperas validación de bahía. |
 | `rssi` | number | no | Intensidad de señal en dBm. Si está y es menor a `-75`, se genera anomalía `RSSI_BAJO`. |
 | `antenna_port` | string | no | Puerto de antena del lector. |
@@ -81,10 +81,12 @@ El servidor mapea la etapa de la lectura al estado del prepack (`Tag.etapa_actua
 | Etapa lectura | Tag.etapa_actual resultante |
 |---|---|
 | `RECEPCION` | `REGISTRADO` |
-| `QA` | `EN_QA` |
-| `SORTING` | `APROBADO` |
-| `PACKING` | `EN_CAJA` |
-| `SALIDA` | `ENVIADO` |
+| `QA`        | `EN_QA` |
+| `REGISTRO`  | `APROBADO` |
+| `SORTING`   | `EN_SORTING` |
+| `PACKING`   | `EN_CAJA` |
+| `AUDITORIA` | `EN_AUDITORIA` |
+| `SALIDA`    | `ENVIADO` |
 
 Reglas:
 - **No retrocede.** Si el tag ya está en `EN_CAJA` y llega lectura de `QA`, la lectura se registra pero el estado no baja.

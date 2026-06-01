@@ -42,18 +42,29 @@ import { emit } from "../realtime/socketIo";
 const VENTANA_DUPLICADO_MS = 5_000;
 const UMBRAL_RSSI_BAJO = -75;
 
-// Mapeo etapa del lector físico → estado del prepack (Tag.etapa_actual)
+// Mapeo etapa del lector físico → estado del prepack (Tag.etapa_actual).
+// Hay un lector RFID en cada una de las 7 etapas del flujo CEDIS.
 // El estado solo avanza, nunca retrocede (excepto a RECHAZADO si qa_fallido).
 const ETAPA_A_ESTADO_PREPACK: Record<string, string> = {
     RECEPCION: 'REGISTRADO',
     QA:        'EN_QA',
-    SORTING:   'APROBADO',
+    REGISTRO:  'APROBADO',
+    SORTING:   'EN_SORTING',
     PACKING:   'EN_CAJA',
+    AUDITORIA: 'EN_AUDITORIA',
     SALIDA:    'ENVIADO',
 };
 
 // Orden de avance — no permitimos regresar a etapas anteriores.
-const ORDEN_ESTADOS = ['REGISTRADO', 'EN_QA', 'APROBADO', 'EN_CAJA', 'ENVIADO'];
+const ORDEN_ESTADOS = [
+    'REGISTRADO',
+    'EN_QA',
+    'APROBADO',
+    'EN_SORTING',
+    'EN_CAJA',
+    'EN_AUDITORIA',
+    'ENVIADO',
+];
 
 export default class RfidController extends AbstractController {
     private static _instance: RfidController;
@@ -662,7 +673,8 @@ export default class RfidController extends AbstractController {
      *   {
      *     epc: string,           // EPC leído del tag (requerido)
      *     lector_id: string,     // id del sensor que leyó (requerido)
-     *     etapa: string,         // RECEPCION | QA | SORTING | PACKING | SALIDA (requerido)
+     *     etapa: string,         // RECEPCION | QA | REGISTRO | SORTING |
+     *                            //   PACKING | AUDITORIA | SALIDA (requerido)
      *     bahia?: string,        // id de bahía/zona física, ej "BAHIA-3"
      *     rssi?: number,         // intensidad de señal
      *     antenna_port?: string
@@ -697,7 +709,7 @@ export default class RfidController extends AbstractController {
             if (!ETAPA_A_ESTADO_PREPACK[etapa as string]) {
                 res.status(400).json({
                     error: 'etapa_invalida',
-                    message: `Etapa "${etapa}" no es válida. Usa: RECEPCION, QA, SORTING, PACKING, SALIDA.`,
+                    message: `Etapa "${etapa}" no es válida. Usa: RECEPCION, QA, REGISTRO, SORTING, PACKING, AUDITORIA, SALIDA.`,
                 });
                 return;
             }

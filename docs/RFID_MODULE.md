@@ -21,12 +21,12 @@ El módulo RFID es el **núcleo operativo del CEDIS**. Su trabajo:
 El flujo físico es:
 
 ```
-[Camión] → RECEPCION → QA → SORTING → PACKING → SALIDA → [Tienda]
-              ↑          ↑       ↑         ↑         ↑
-           ESP32      ESP32    ESP32    ESP32     ESP32
+[Camión] → RECEPCION → QA → REGISTRO → SORTING → PACKING → AUDITORIA → SALIDA → [Tienda]
+              ↑         ↑      ↑          ↑         ↑          ↑          ↑
+           ESP32     ESP32   ESP32      ESP32     ESP32      ESP32      ESP32
 ```
 
-Cada etapa = un sensor RFID. Cada sensor manda un `POST /rfid/lectura` al backend.
+Cada etapa = un sensor RFID (7 en total). Cada sensor manda un `POST /rfid/lectura` al backend.
 
 ---
 
@@ -108,16 +108,18 @@ KPIs operativos del CEDIS calculados en vivo desde la BD. Lo consume la barra su
 }
 ```
 
-**Etapas válidas:** `RECEPCION`, `QA`, `SORTING`, `PACKING`, `SALIDA`.
+**Etapas válidas:** `RECEPCION`, `QA`, `REGISTRO`, `SORTING`, `PACKING`, `AUDITORIA`, `SALIDA`.
 
-**Mapeo a `Tag.etapa_actual`:**
-| Etapa lectura | Estado del prepack resultante |
-|---|---|
-| RECEPCION | REGISTRADO |
-| QA | EN_QA |
-| SORTING | APROBADO |
-| PACKING | EN_CAJA |
-| SALIDA | ENVIADO |
+**Mapeo a `Tag.etapa_actual` y a la columna del Gantt:**
+| Etapa lectura | Estado del prepack | Columna del Gantt |
+|---|---|---|
+| RECEPCION | REGISTRADO    | PRE-REG    |
+| QA        | EN_QA         | QA         |
+| REGISTRO  | APROBADO      | REGISTRO   |
+| SORTING   | EN_SORTING    | SORTER     |
+| PACKING   | EN_CAJA       | BAHIA      |
+| AUDITORIA | EN_AUDITORIA  | AUDITORIA  |
+| SALIDA    | ENVIADO       | ENVIO      |
 
 **Reglas de avance:**
 - No retrocede de etapa.
@@ -312,7 +314,6 @@ Si quieren cambiar la fórmula de stars/level, edita `InspeccionQAController.rec
 | Pendiente | Por qué no se hizo |
 |---|---|
 | Auth Cognito en rutas RFID | Dashboard y otros equipos no mandan token todavía; activar guards los rompería. |
-| Etapa AUDITORIA explícita | El backend mapea `SORTING → APROBADO` directo. Falta modelar AUDITORIA como estado intermedio. |
 | Reconexión de Socket.IO con backoff | Hoy reconecta a 1s fijo. Si el backend cae mucho rato, hay reintentos en exceso. |
 | Tests automatizados | El módulo se valida manualmente con el simulator. |
 | Color de productos como paleta cerrada en BD | Hoy `Tag.color` es string libre; el frontend normaliza a Title Case pero la BD aún acepta cualquier valor. |
@@ -326,5 +327,5 @@ Si quieren cambiar la fórmula de stars/level, edita `InspeccionQAController.rec
 - **OC** — Orden de Compra. Un pedido al proveedor que llega como N prepacks.
 - **Palet** — Grupo lógico de prepacks que comparten OC y se procesan juntos.
 - **Bahía** — Zona física del CEDIS asignada a una tienda destino. Hay 10 (BAHIA-1 a BAHIA-10).
-- **Etapa** — Una de las 5 fases del flujo: RECEPCION, QA, SORTING, PACKING, SALIDA.
+- **Etapa** — Una de las 7 fases del flujo: RECEPCION, QA, REGISTRO, SORTING, PACKING, AUDITORIA, SALIDA. Cada una tiene un lector RFID físico.
 - **Anomalía** — Evento de error detectado automática o manualmente.

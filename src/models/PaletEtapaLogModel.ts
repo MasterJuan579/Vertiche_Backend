@@ -22,8 +22,10 @@ interface PaletEtapaLogAtributos{
 export enum EtapaRFID{
     RECEPCION = 'RECEPCION',
     QA = 'QA',
+    REGISTRO = 'REGISTRO',
     SORTING = 'SORTING',
     PACKING = 'PACKING',
+    AUDITORIA = 'AUDITORIA',
     SALIDA = 'SALIDA'
 }
 
