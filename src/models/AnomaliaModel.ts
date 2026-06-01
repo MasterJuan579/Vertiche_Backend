@@ -28,6 +28,7 @@ export enum EtapaRFID{
     QA = 'QA',
     REGISTRO = 'REGISTRO',
     SORTING = 'SORTING',
+    EMPAQUETADO = 'EMPAQUETADO',
     PACKING = 'PACKING',
     AUDITORIA = 'AUDITORIA',
     SALIDA = 'SALIDA'
