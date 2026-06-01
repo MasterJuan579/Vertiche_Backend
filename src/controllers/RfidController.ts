@@ -65,6 +65,7 @@ export default class RfidController extends AbstractController {
         this.router.get('/health', this.getHealth.bind(this));
         this.router.get('/kpi', this.getKpi.bind(this));
         this.router.post('/lectura', this.postLectura.bind(this));
+        this.router.post('/bahia/scan', this.postBahiaScan.bind(this));
         this.router.post('/orden-compra', this.postCrearOrdenCompra.bind(this));
         this.router.get('/orden/:orden_id/prepacks', this.getPrepacksDeOrden.bind(this));
         this.router.post('/asignar-epc', this.postAsignarEpc.bind(this));
@@ -489,6 +490,173 @@ export default class RfidController extends AbstractController {
     }
 
     /**
+     * POST /rfid/bahia/scan
+     * Arco RFID post-sorter: recibe el EPC que ya cayÃ³ en una bahÃ­a fÃ­sica y
+     * resuelve de forma determinÃ­stica a quÃ© caja (1..3) debe ir.
+     */
+    private async postBahiaScan(req: Request, res: Response): Promise<void> {
+        const t = await db.sequelize.transaction();
+        try {
+            const body = req.body || {};
+            const epc = typeof body.epc === 'string' ? body.epc.trim() : '';
+            const bahiaActual = this.normalizarBahiaActual(body.bahiaActual);
+
+            const faltantes: string[] = [];
+            if (!epc) faltantes.push('epc');
+            if (bahiaActual === null) faltantes.push('bahiaActual');
+            if (faltantes.length > 0) {
+                await t.rollback();
+                res.status(400).json({
+                    error: 'campos_requeridos',
+                    message: `Faltan campos: ${faltantes.join(', ')}`,
+                    detalle: faltantes,
+                });
+                return;
+            }
+            const bahia = bahiaActual as number;
+
+            let tag: any = await db.Tag.findByPk(epc, {
+                include: [
+                    { model: db.Tienda, attributes: ['tienda_id', 'nombre', 'ciudad', 'bahia_asignada'] },
+                    {
+                        model: db.Palet,
+                        required: false,
+                        include: [{ model: db.OrdenCompra, required: false }],
+                    },
+                ],
+                transaction: t,
+            });
+
+            if (!tag) {
+                tag = await this.crearTagDesdeScan(body, epc, t);
+                if (!tag) {
+                    await t.rollback();
+                    res.status(404).json({
+                        error: 'tag_no_encontrado',
+                        message: 'El EPC no existe. Para alta automÃ¡tica manda sku, proveedor_id y tienda_id vÃ¡lidos.',
+                    });
+                    return;
+                }
+            }
+
+            const tienda = tag.Tienda || await db.Tienda.findByPk(tag.tienda_id, {
+                attributes: ['tienda_id', 'nombre', 'ciudad', 'bahia_asignada'],
+                transaction: t,
+            });
+            if (!tienda) {
+                await t.rollback();
+                res.status(400).json({
+                    error: 'fk_invalida',
+                    message: `Tienda ${tag.tienda_id} no existe`,
+                    detalle: 'tienda_id',
+                });
+                return;
+            }
+
+            const cajaDestino = await this.resolverCajaDestino(tag, bahia, t);
+            const cajaId = this.buildCajaId(bahia, cajaDestino, tag.tienda_id);
+            const ahora = new Date();
+
+            await db.Caja.findOrCreate({
+                where: { caja_id: cajaId },
+                defaults: {
+                    caja_id: cajaId,
+                    tienda_id: tag.tienda_id,
+                    bahia: this.formatBahia(bahia),
+                    estado: 'EN_LLENADO',
+                    timestamp_creacion: ahora,
+                },
+                transaction: t,
+            });
+
+            const vinculacionExistente: any = await db.PrepackCaja.findOne({
+                where: { epc },
+                order: [['timestamp_vinculacion', 'DESC']],
+                transaction: t,
+            });
+            if (!vinculacionExistente) {
+                await db.PrepackCaja.create({
+                    epc,
+                    caja_id: cajaId,
+                    timestamp_vinculacion: ahora,
+                    es_correcto: true,
+                }, { transaction: t });
+            }
+
+            const lectura: any = await db.EventoLectura.create({
+                epc,
+                lector_id: `ARCO-BAHIA-${bahia}`,
+                bahia: this.formatBahia(bahia),
+                timestamp: ahora,
+                etapa: 'PACKING',
+                rssi: typeof body.rssi === 'number' ? body.rssi : null,
+                antenna_port: typeof body.antenna_port === 'string' ? body.antenna_port : null,
+                es_duplicado: false,
+            }, { transaction: t });
+
+            if (tag.etapa_actual !== 'RECHAZADO' && tag.etapa_actual !== 'ENVIADO') {
+                await tag.update({ etapa_actual: 'EN_CAJA' }, { transaction: t });
+            }
+
+            const ordenCompra = tag.Palet?.OrdenCompra || null;
+            const response = {
+                epc: tag.epc,
+                bahiaActual: bahia,
+                cajaDestino,
+                orden_id: tag.Palet?.orden_id || ordenCompra?.orden_id || null,
+                producto: ordenCompra?.nombre_producto || tag.sku,
+                tienda: {
+                    tienda_id: tienda.tienda_id,
+                    nombre: tienda.nombre,
+                    ciudad: tienda.ciudad,
+                },
+                timestamp: ahora.toISOString(),
+            };
+
+            await t.commit();
+
+            const socketPayload = {
+                ...response,
+                caja_id: cajaId,
+                lectura_id: lectura.id,
+                tag: {
+                    epc: tag.epc,
+                    sku: tag.sku,
+                    talla: tag.talla,
+                    color: tag.color,
+                    cantidad_piezas: tag.cantidad_piezas,
+                    tienda_id: tag.tienda_id,
+                    palet_id: tag.palet_id,
+                    pedido_id: tag.pedido_id,
+                    etapa_actual: 'EN_CAJA',
+                },
+            };
+            emit('sorter-caja-scan', socketPayload);
+            emit('lectura', {
+                id: lectura.id,
+                epc: tag.epc,
+                lector_id: lectura.lector_id,
+                bahia: lectura.bahia,
+                etapa: lectura.etapa,
+                timestamp: lectura.timestamp,
+                rssi: lectura.rssi,
+                antenna_port: lectura.antenna_port,
+                es_duplicado: false,
+                tag: socketPayload.tag,
+            });
+
+            res.status(200).json(response);
+        } catch (err: any) {
+            await t.rollback();
+            console.error('[RfidController.bahiaScan]', err);
+            res.status(500).json({
+                error: 'error_interno',
+                message: err.message || 'Error procesando scan de bahÃ­a',
+            });
+        }
+    }
+
+    /**
      * POST /rfid/lectura
      * Body esperado del ESP32:
      *   {
@@ -539,7 +707,14 @@ export default class RfidController extends AbstractController {
 
             // 2) Buscar el tag
             const tag: any = await db.Tag.findByPk(epc, {
-                include: [{ model: db.Tienda, attributes: ['tienda_id', 'nombre', 'bahia_asignada'] }],
+                include: [
+                    { model: db.Tienda, attributes: ['tienda_id', 'nombre', 'ciudad', 'bahia_asignada'] },
+                    {
+                        model: db.Palet,
+                        required: false,
+                        include: [{ model: db.OrdenCompra, required: false }],
+                    },
+                ],
             });
 
             // 2a) Si no existe → TAG_DESCONOCIDO. Igual registramos la lectura.
@@ -655,8 +830,16 @@ export default class RfidController extends AbstractController {
                 tag: {
                     epc: tag.epc,
                     sku: tag.sku,
+                    talla: tag.talla,
+                    color: tag.color,
+                    cantidad_piezas: tag.cantidad_piezas,
                     tienda_id: tag.tienda_id,
                     tienda: tag.Tienda,
+                    palet_id: tag.palet_id,
+                    pedido_id: tag.pedido_id,
+                    orden_id: tag.Palet?.orden_id || tag.Palet?.OrdenCompra?.orden_id || null,
+                    producto: tag.Palet?.OrdenCompra?.nombre_producto || tag.sku,
+                    tipo_flujo: tag.tipo_flujo,
                     etapa_actual: etapaCambio ? nuevoEstado : etapaAnterior,
                     qa_fallido: tag.qa_fallido,
                 },
@@ -704,5 +887,94 @@ export default class RfidController extends AbstractController {
             descripcion: data.descripcion || null,
         });
         return anom;
+    }
+
+    private normalizarBahiaActual(raw: any): number | null {
+        if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1) return raw;
+        if (typeof raw === 'string') {
+            const match = raw.trim().match(/(\d+)\s*$/);
+            if (!match) return null;
+            const n = parseInt(match[1] || '', 10);
+            return Number.isFinite(n) && n >= 1 ? n : null;
+        }
+        return null;
+    }
+
+    private formatBahia(bahiaActual: number): string {
+        return `BAHIA-${bahiaActual}`;
+    }
+
+    private buildCajaId(bahiaActual: number, cajaDestino: number, tiendaId: string): string {
+        return `BAHIA-${bahiaActual}-CAJA-${cajaDestino}-${tiendaId}`;
+    }
+
+    private parseCajaDestino(cajaId: string): number | null {
+        const match = String(cajaId || '').match(/CAJA-(\d+)/);
+        if (!match) return null;
+        const n = parseInt(match[1] || '', 10);
+        return Number.isFinite(n) && n >= 1 && n <= 3 ? n : null;
+    }
+
+    private async resolverCajaDestino(tag: any, bahiaActual: number, transaction: any): Promise<number> {
+        const vinculacion: any = await db.PrepackCaja.findOne({
+            where: { epc: tag.epc },
+            order: [['timestamp_vinculacion', 'DESC']],
+            transaction,
+        });
+        const cajaExistente = this.parseCajaDestino(vinculacion?.caja_id);
+        if (cajaExistente) return cajaExistente;
+
+        return this.cajaDeterministicaPorTienda(tag.tienda_id, bahiaActual);
+    }
+
+    private cajaDeterministicaPorTienda(tiendaId: string, bahiaActual: number): number {
+        const source = `${tiendaId || ''}:${bahiaActual}`;
+        let hash = 0;
+        for (let i = 0; i < source.length; i++) {
+            hash = ((hash << 5) - hash) + source.charCodeAt(i);
+            hash |= 0;
+        }
+        return (Math.abs(hash) % 3) + 1;
+    }
+
+    private async crearTagDesdeScan(body: any, epc: string, transaction: any): Promise<any | null> {
+        const sku = typeof body.sku === 'string' ? body.sku.trim() : '';
+        const proveedor_id = body.proveedor_id;
+        const tienda_id = typeof body.tienda_id === 'string' ? body.tienda_id.trim() : '';
+        if (!sku || !proveedor_id || !tienda_id) return null;
+
+        const [proveedor, tienda] = await Promise.all([
+            db.Proveedor.findByPk(proveedor_id, { transaction }),
+            db.Tienda.findByPk(tienda_id, { transaction }),
+        ]);
+        if (!proveedor || !tienda) return null;
+
+        await db.Tag.create({
+            epc,
+            sku,
+            talla: typeof body.talla === 'string' ? body.talla.trim() : null,
+            color: typeof body.color === 'string' ? body.color.trim() : null,
+            cantidad_piezas: Number(body.cantidad_piezas) || 1,
+            proveedor_id,
+            tienda_id,
+            palet_id: body.palet_id || null,
+            pedido_id: body.pedido_id || null,
+            tipo_flujo: body.tipo_flujo || 'CROSS_DOCK',
+            etapa_actual: 'APROBADO',
+            qa_fallido: false,
+            registrado_en: new Date(),
+        }, { transaction });
+
+        return db.Tag.findByPk(epc, {
+            include: [
+                { model: db.Tienda, attributes: ['tienda_id', 'nombre', 'ciudad', 'bahia_asignada'] },
+                {
+                    model: db.Palet,
+                    required: false,
+                    include: [{ model: db.OrdenCompra, required: false }],
+                },
+            ],
+            transaction,
+        });
     }
 }
