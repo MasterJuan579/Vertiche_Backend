@@ -858,6 +858,29 @@ export default class RfidController extends AbstractController {
             };
             emit('lectura', lecturaPayload);
 
+            if (etapa === 'SORTING') {
+                emit('sorter-scan', {
+                    lectura_id: lectura.id,
+                    epc,
+                    lector_id,
+                    bahia,
+                    etapa,
+                    timestamp: lectura.timestamp,
+                    rssi,
+                    tag: lecturaPayload.tag,
+                    prepack: {
+                        epc,
+                        orden_id: lecturaPayload.tag.orden_id || lecturaPayload.tag.pedido_id || null,
+                        producto: lecturaPayload.tag.producto || lecturaPayload.tag.sku || 'Prepack sin detalle',
+                        proveedor: null,
+                        tienda: lecturaPayload.tag.tienda || null,
+                        tipo_flujo: lecturaPayload.tag.tipo_flujo || null,
+                        qa_fallido: !!lecturaPayload.tag.qa_fallido,
+                        tag: lecturaPayload.tag,
+                    },
+                });
+            }
+
             for (const a of anomaliasGeneradas) {
                 emit('anomalia', a);
             }
