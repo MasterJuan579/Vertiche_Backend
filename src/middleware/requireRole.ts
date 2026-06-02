@@ -31,7 +31,11 @@ export function requireRole(requiredRole: Rol): RequestHandler {
                 res.status(403).json({ error: 'usuario_inactivo' });
                 return;
             }
-            if (usuario.rol !== requiredRole) {
+            // ADMIN is a superuser: it satisfies any role requirement. Role is
+            // read from MySQL (authoritative) — a forged token cannot claim ADMIN.
+            // The `!usuario` and `!usuario.activo` checks above still apply, so
+            // a missing or deactivated admin is still blocked.
+            if (usuario.rol !== requiredRole && usuario.rol !== 'ADMIN') {
                 res.status(403).json({ error: 'forbidden' });
                 return;
             }
