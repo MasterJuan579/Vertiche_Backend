@@ -13,13 +13,15 @@ interface InspeccionQAAtributos{
     proveedor_id:number,
     operador_id:string,
     resultado:string,
+    score:number,
     defecto_tipo:string,
     observacion:string,
     fecha:Date
 }
 
 export enum ResultadoQA{
-    APROBADO = 'APROBADO',
+    APROBADO  = 'APROBADO',
+    OBSERVADO = 'OBSERVADO',
     RECHAZADO = 'RECHAZADO',
     RETRABAJO = 'RETRABAJO',
     PENDIENTE = 'PENDIENTE'
@@ -33,6 +35,7 @@ module.exports = (sequelize:any, DataTypes:any)=>{
         proveedor_id!: number;
         operador_id!: string;
         resultado!: string;
+        score!: number;
         defecto_tipo!: string;
         observacion!: string;
         fecha!: Date;
@@ -80,6 +83,11 @@ module.exports = (sequelize:any, DataTypes:any)=>{
             values:Object.values(ResultadoQA),
             allowNull:false,
             defaultValue:ResultadoQA.PENDIENTE
+        },
+        score:{
+            type:DataTypes.DECIMAL(3,1),
+            allowNull:false,
+            defaultValue:5.0
         },
         defecto_tipo:DataTypes.STRING,
         observacion:DataTypes.STRING,
