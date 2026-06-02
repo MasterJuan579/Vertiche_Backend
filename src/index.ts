@@ -1,4 +1,4 @@
-import Server from "./provider/Server";
+﻿import Server from "./provider/Server";
 import {PORT,NODE_ENV} from './config';
 import express from 'express';
 import cors from 'cors';
@@ -21,6 +21,7 @@ import AuthController from "./controllers/AuthController";
 import RfidController from "./controllers/RfidController";
 import PlanQAController from "./controllers/PlanQAController";
 import CatalogoDefectoController from "./controllers/CatalogoDefectoController";
+import TurnoController from "./controllers/TurnoController";
 
  const server:Server = new Server({
     port:PORT,
@@ -54,7 +55,8 @@ import CatalogoDefectoController from "./controllers/CatalogoDefectoController";
         AuthController.instance,
         RfidController.instance,
         PlanQAController.instance,
-        CatalogoDefectoController.instance
+        CatalogoDefectoController.instance,
+        TurnoController.instance
     ]
  });
  server.init();
