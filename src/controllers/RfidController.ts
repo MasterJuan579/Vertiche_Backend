@@ -861,6 +861,40 @@ export default class RfidController extends AbstractController {
             };
             emit('lectura', lecturaPayload);
 
+            // ── QA: decidir si el prepack se revisa o pasa directo ──
+            if (etapa === 'QA' && tag && !esDuplicado) {
+                const proveedor: any = await db.Proveedor.findByPk(tag.proveedor_id);
+                if (proveedor) {
+                    const starsVal = parseFloat(proveedor.stars) || 0;
+                    const cuota = starsVal >= 4.5 ? 3 : starsVal >= 3.0 ? 5 : 7;
+                    const hoyQA = new Date(); hoyQA.setHours(0,0,0,0);
+                    const mananaQA = new Date(hoyQA); mananaQA.setDate(mananaQA.getDate()+1);
+                    const inspeccionadosHoy = await db.InspeccionQA.count({
+                        where: {
+                            proveedor_id: proveedor.id,
+                            fecha: { [Op.gte]: hoyQA, [Op.lt]: mananaQA }
+                        }
+                    });
+                    const restantes = Math.max(0, cuota - inspeccionadosHoy);
+                    const qaPayload = restantes > 0
+                        ? {
+                            accion: 'REVISAR', epc, sku: tag.sku, talla: tag.talla, color: tag.color,
+                            proveedor_id: proveedor.id, proveedor_nombre: proveedor.nombre,
+                            proveedor_codigo: proveedor.codigo, stars: starsVal, level: proveedor.level,
+                            cuota, inspeccionados_hoy: inspeccionadosHoy,
+                            restantes_antes: restantes, restantes_despues: restantes - 1
+                        }
+                        : {
+                            accion: 'PASA', epc, sku: tag.sku, talla: tag.talla, color: tag.color,
+                            proveedor_id: proveedor.id, proveedor_nombre: proveedor.nombre,
+                            proveedor_codigo: proveedor.codigo, stars: starsVal, level: proveedor.level,
+                            cuota, inspeccionados_hoy: inspeccionadosHoy, restantes: 0,
+                            mensaje: 'Cuota completada, prepack pasa directo'
+                        };
+                    emit('qa-escaneo', qaPayload);
+                }
+            }
+
             if (etapa === 'SORTING') {
                 emit('sorter-scan', {
                     lectura_id: lectura.id,
