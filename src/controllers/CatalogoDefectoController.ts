@@ -18,14 +18,14 @@ import AbstractController from "./AbstractController";
 import db from "../models";
 
 const SEED_DEFECTOS = [
-    { nombre: 'Mala calidad en la tela', criticidad: 'CRITICO', penalizacion: 2.5, descripcion: 'Tela de mala calidad que no cumple estándares mínimos' },
-    { nombre: 'Ruptura o rasgadura',      criticidad: 'CRITICO', penalizacion: 2.5, descripcion: 'Daño físico irreparable en la prenda' },
-    { nombre: 'Mancha o suciedad',        criticidad: 'ALTO',    penalizacion: 1.5, descripcion: 'Contaminación visible en la prenda' },
-    { nombre: 'Costura defectuosa',       criticidad: 'ALTO',    penalizacion: 1.5, descripcion: 'Costura con defecto visible o funcional' },
-    { nombre: 'Cantidad faltante',        criticidad: 'ALTO',    penalizacion: 1.5, descripcion: 'Prepack con menos piezas de lo declarado' },
-    { nombre: 'Etiqueta incorrecta',      criticidad: 'MENOR',   penalizacion: 0.5, descripcion: 'Etiqueta con información incorrecta o desalineada' },
-    { nombre: 'SKU equivocado',           criticidad: 'MENOR',   penalizacion: 0.5, descripcion: 'El SKU del artículo no coincide con el pedido' },
-    { nombre: 'Otro (especificar)',       criticidad: 'MENOR',   penalizacion: 0.5, descripcion: 'Defecto no catalogado — requiere descripción manual en observación' },
+    { nombre: 'Mala calidad en la tela', penalizacion: 1.0, descripcion: 'Tela de mala calidad que no cumple estándares mínimos' },
+    { nombre: 'Ruptura o rasgadura',     penalizacion: 1.0, descripcion: 'Daño físico irreparable en la prenda' },
+    { nombre: 'Mancha o suciedad',       penalizacion: 1.0, descripcion: 'Contaminación visible en la prenda' },
+    { nombre: 'Costura defectuosa',      penalizacion: 1.0, descripcion: 'Costura con defecto visible o funcional' },
+    { nombre: 'Cantidad faltante',       penalizacion: 1.0, descripcion: 'Prepack con menos piezas de lo declarado' },
+    { nombre: 'Etiqueta incorrecta',     penalizacion: 1.0, descripcion: 'Etiqueta con información incorrecta o desalineada' },
+    { nombre: 'SKU equivocado',          penalizacion: 1.0, descripcion: 'El SKU del artículo no coincide con el pedido' },
+    { nombre: 'Otro (especificar)',      penalizacion: 1.0, descripcion: 'Defecto no catalogado — requiere descripción manual en observación' },
 ];
 
 export default class CatalogoDefectoController extends AbstractController {

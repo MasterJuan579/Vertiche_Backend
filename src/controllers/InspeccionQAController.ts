@@ -74,42 +74,23 @@ export default class InspeccionQAController extends AbstractController {
         try {
             const { defectos, defecto_tipo, ...bodyResto } = req.body;
 
-            // 1. Calcular score a partir de los defectos seleccionados
+            // 1. Calcular score: cada defecto descuenta 1.0 estrella (peso uniforme)
+            const PENALIZACION_POR_DEFECTO = 1.0;
             let score = 5.0;
             let defecto_tipo_final = typeof defecto_tipo === 'string' ? defecto_tipo : '';
 
-            const tieneDefectos =
-                (Array.isArray(defectos) && defectos.length > 0) ||
-                (typeof defecto_tipo === 'string' && defecto_tipo.trim().length > 0);
+            let nombresDefectos: string[] = [];
+            if (Array.isArray(defectos) && defectos.length > 0) {
+                nombresDefectos = defectos;
+                defecto_tipo_final = defectos.join(', ');
+            } else if (typeof defecto_tipo === 'string' && defecto_tipo.trim().length > 0) {
+                nombresDefectos = defecto_tipo.split(',').map((s: string) => s.trim()).filter(Boolean);
+            }
 
-            if (tieneDefectos) {
-                const catalogo: any[] = await db.CatalogoDefecto.findAll({
-                    where: { activo: true },
-                    raw: true
-                });
-                const penMap = new Map<string, number>(
-                    catalogo.map((d: any) => [d.nombre, parseFloat(d.penalizacion)])
+            if (nombresDefectos.length > 0) {
+                score = parseFloat(
+                    Math.max(0, 5.0 - nombresDefectos.length * PENALIZACION_POR_DEFECTO).toFixed(1)
                 );
-
-                let nombresDefectos: string[];
-                if (Array.isArray(defectos) && defectos.length > 0) {
-                    // Formato nuevo: array de nombres
-                    nombresDefectos = defectos;
-                    defecto_tipo_final = defectos.join(', ');
-                } else {
-                    // Formato legacy: string separado por comas
-                    nombresDefectos = (defecto_tipo as string)
-                        .split(',')
-                        .map((s: string) => s.trim())
-                        .filter(Boolean);
-                }
-
-                let penTotal = 0;
-                for (const nombre of nombresDefectos) {
-                    // Strings no encontrados en catálogo se tratan como MENOR (0.5)
-                    penTotal += penMap.get(nombre) ?? 0.5;
-                }
-                score = parseFloat(Math.max(0, 5.0 - penTotal).toFixed(1));
             }
 
             // 2. Persistir la inspección con su score calculado
