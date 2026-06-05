@@ -204,13 +204,16 @@ export default class RfidController extends AbstractController {
      *     Cada Tag tiene EPC tipo 'PENDIENTE-{orden_id}-{n}' y los datos
      *     del renglón (sku, talla, color, piezas, tienda).
      *
-     * Body: {
-     *   proveedor_id,
-     *   nombre_producto,
-     *   modelo?,
-     *   numero_palets?,
+     * Body (formato nuevo — prepacks mixtos):
+     *   detalles: [{
+     *     tienda_id,
+     *     cantidad,                 // copias idénticas de este prepack
+     *     lineas: [{ sku, talla, color, cantidad }]   // surtido del prepack
+     *   }]
+     *
+     * Body (formato viejo — retrocompatible, un solo color/talla por prepack):
      *   detalles: [{ sku, talla, color, piezas_por_prepack, cantidad, tienda_id }]
-     * }
+     *
      * Respuesta 201: { pedido, ordenCompra, palets, detalles, prepacks }
      */
     private async postCrearOrdenCompra(req: Request, res: Response): Promise<void> {
@@ -238,9 +241,40 @@ export default class RfidController extends AbstractController {
                 return;
             }
 
+            // Validación de cada renglón.
+            // CAMBIO (prepacks mixtos): se acepta el formato nuevo con `lineas`
+            // (surtido) y se mantiene el viejo (sku/talla/color/piezas) para no
+            // romper a quien siga mandando el body anterior.
             // Validación de cada renglón
-            for (let i = 0; i < detalles.length; i++) {
-                const d = detalles[i];
+            // Validación de cada renglón
+        for (let i = 0; i < detalles.length; i++) {
+            const d = detalles[i];
+            const tieneLineas = Array.isArray(d.lineas) && d.lineas.length > 0;
+
+            // ✅ PRIMERO: detectar formato nuevo (con lineas)
+            if (tieneLineas) {
+                if (!d.tienda_id || !Number(d.cantidad) || Number(d.cantidad) <= 0) {
+                    await t.rollback();
+                    res.status(400).json({
+                        error: 'detalle_invalido',
+                        message: `Prepack ${i + 1}: tienda_id y cantidad (copias) son requeridos.`,
+                    });
+                    return;
+                }
+                for (let j = 0; j < d.lineas.length; j++) {
+                    const ln = d.lineas[j];
+                    if (!ln.sku || !ln.sku.trim() || !Number(ln.cantidad) || Number(ln.cantidad) <= 0) {
+                        await t.rollback();
+                        res.status(400).json({
+                            error: 'detalle_invalido',
+                            message: `Prepack ${i + 1}, línea ${j + 1}: sku y cantidad son requeridos.`,
+                        });
+                        return;
+                    }
+                }
+            } 
+            // ✅ SEGUNDO: formato viejo (retrocompatible)
+            else {
                 if (!d.sku || !d.tienda_id || !Number(d.piezas_por_prepack) || !Number(d.cantidad)) {
                     await t.rollback();
                     res.status(400).json({
@@ -250,6 +284,7 @@ export default class RfidController extends AbstractController {
                     return;
                 }
             }
+        }
 
             const proveedor = await db.Proveedor.findByPk(proveedor_id, { transaction: t });
             if (!proveedor) {
@@ -325,28 +360,57 @@ export default class RfidController extends AbstractController {
             let globalIdx = 0;
 
             for (const d of detalles) {
-                const cantidad = Number(d.cantidad);
-                const piezas = Number(d.piezas_por_prepack);
+                const cantidad = Number(d.cantidad); // copias de este prepack
+                const tieneLineas = Array.isArray(d.lineas) && d.lineas.length > 0;
 
-                const detalle = await db.DetalleOrden.create({
-                    orden_id,
-                    sku: d.sku,
-                    talla: d.talla || null,
-                    color: d.color || null,
-                    cantidad: piezas * cantidad,
-                }, { transaction: t });
-                detallesCreados.push(detalle);
+                // CAMBIO (prepacks mixtos): normalizamos a un arreglo de líneas
+                // `surtido`. El formato viejo se convierte a una sola línea, así
+                // el resto del flujo es idéntico para ambos.
+                const surtido = tieneLineas
+                    ? d.lineas.map((ln: any) => ({
+                        sku: ln.sku,
+                        talla: ln.talla || null,
+                        color: ln.color || null,
+                        cantidad: Number(ln.cantidad) || 1,
+                    }))
+                    : [{
+                        sku: d.sku,
+                        talla: d.talla || null,
+                        color: d.color || null,
+                        cantidad: Number(d.piezas_por_prepack) || 1,
+                    }];
 
-                // Pre-crear los Tags placeholder
+                // Piezas por prepack = suma de las cantidades del surtido.
+                const piezas = surtido.reduce((acc: number, ln: any) => acc + ln.cantidad, 0);
+                // SKU representativo del prepack (el de la primera línea).
+                const skuPrincipal = surtido[0].sku;
+
+                // Un DetalleOrden por línea del surtido (refleja la composición
+                // real de la OC). cantidad = piezas de esa línea × copias.
+                for (const ln of surtido) {
+                    const detalle = await db.DetalleOrden.create({
+                        orden_id,
+                        sku: ln.sku,
+                        talla: ln.talla,
+                        color: ln.color,
+                        cantidad: ln.cantidad * cantidad,
+                    }, { transaction: t });
+                    detallesCreados.push(detalle);
+                }
+
+                // Pre-crear los Tags placeholder (uno por copia del prepack)
                 for (let i = 0; i < cantidad; i++) {
                     globalIdx++;
                     const epc = `PENDIENTE-${orden_id}-${String(globalIdx).padStart(4, '0')}`;
                     const palet = palets[(globalIdx - 1) % palets.length]; // round-robin
                     const tag = await db.Tag.create({
                         epc,
-                        sku: d.sku,
-                        talla: d.talla || null,
-                        color: d.color || null,
+                        sku: skuPrincipal,
+                        // Resumen talla/color: si el prepack es mixto se deja null
+                        // (el detalle real vive en PrepackLinea). Si es simple,
+                        // conserva el valor único como antes.
+                        talla: surtido.length === 1 ? surtido[0].talla : null,
+                        color: surtido.length === 1 ? surtido[0].color : null,
                         cantidad_piezas: piezas,
                         proveedor_id,
                         tienda_id: d.tienda_id,
@@ -357,6 +421,20 @@ export default class RfidController extends AbstractController {
                         qa_fallido: false,
                         registrado_en: new Date(),
                     }, { transaction: t });
+
+                    // CAMBIO (prepacks mixtos): persistir el surtido del prepack
+                    // como filas en PrepackLinea (tabla nueva). Esto es lo que el
+                    // frontend lee como `prendas` para mostrar el desglose.
+                    for (const ln of surtido) {
+                        await db.PrepackLinea.create({
+                            epc,
+                            sku: ln.sku,
+                            talla: ln.talla,
+                            color: ln.color,
+                            cantidad: ln.cantidad,
+                        }, { transaction: t });
+                    }
+
                     prepacks.push(tag);
                 }
             }
@@ -395,16 +473,37 @@ export default class RfidController extends AbstractController {
                 where: { palet_id: paletIds },
                 include: [
                     { model: db.Tienda, attributes: ['tienda_id', 'nombre', 'bahia_asignada'] },
+                    // CAMBIO (prepacks mixtos): incluir el surtido del prepack.
+                    { model: db.PrepackLinea, as: 'lineas', required: false },
                 ],
                 order: [['epc', 'ASC']],
             });
 
-            const pendientes = tags.filter((t: any) => String(t.epc).startsWith('PENDIENTE-'));
-            const asignados = tags.filter((t: any) => !String(t.epc).startsWith('PENDIENTE-'));
+            // CAMBIO (prepacks mixtos): exponer las líneas como `prendas`, que es
+            // la forma que las vistas del frontend ya saben leer. Cada línea
+            // (talla/color/cantidad) se expande a `cantidad` entradas { talla, color }.
+            const tagsConPrendas = tags.map((tag: any) => {
+                const plano = tag.toJSON ? tag.toJSON() : tag;
+                const lineas = plano.lineas || [];
+                // Expandir cada línea (talla/color/cantidad) a `cantidad`
+                // entradas { talla, color }. Loop simple para no depender de
+                // métodos de Array de versiones de JS más nuevas.
+                const prendas: any[] = [];
+                for (const ln of lineas) {
+                    const n = Number(ln.cantidad) || 1;
+                    for (let k = 0; k < n; k++) {
+                        prendas.push({ talla: ln.talla, color: ln.color });
+                    }
+                }
+                return { ...plano, prendas };
+            });
+
+            const pendientes = tagsConPrendas.filter((t: any) => String(t.epc).startsWith('PENDIENTE-'));
+            const asignados = tagsConPrendas.filter((t: any) => !String(t.epc).startsWith('PENDIENTE-'));
 
             res.status(200).json({
                 orden_id,
-                total: tags.length,
+                total: tagsConPrendas.length,
                 pendientes_count: pendientes.length,
                 asignados_count: asignados.length,
                 pendientes,
@@ -1118,3 +1217,4 @@ export default class RfidController extends AbstractController {
         });
     }
 }
+

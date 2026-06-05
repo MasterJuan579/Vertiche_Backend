@@ -3,6 +3,7 @@
  * Descripción: Controller para el plan de inspección QA. Calcula cuántos
  *              prepacks revisar por proveedor según su calificación (stars).
  *              Incluye endpoint de escaneo para decidir si se revisa o no.
+ *              Emite eventos Socket.IO para actualizar el frontend en tiempo real.
  *              Reglas:
  *                stars >= 4.5 → cuota = 3
  *                stars >= 3.0 → cuota = 5
@@ -12,6 +13,7 @@ import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
 import { Op } from "sequelize";
+import { emit } from "../realtime/socketIo";
 
 export default class PlanQAController extends AbstractController {
     // Singleton
@@ -39,7 +41,7 @@ export default class PlanQAController extends AbstractController {
         return { hoy, manana };
     }
 
-    private async getPendientes(req: Request, res: Response): Promise<void> {
+    private async getPendientes(_req: Request, res: Response): Promise<void> {
         try {
             const proveedores = await db.Proveedor.findAll({
                 attributes: ['id', 'nombre', 'codigo', 'stars', 'level', 'color', 'origin']
@@ -125,9 +127,11 @@ export default class PlanQAController extends AbstractController {
 
             const restantes = Math.max(0, cuota - inspeccionadosHoy);
 
-            // 4. Decidir acción: REVISAR o PASA
+            // 4. Decidir acción y armar respuesta
+            let respuesta: any;
+
             if (restantes > 0) {
-                res.status(200).json({
+                respuesta = {
                     accion: "REVISAR",
                     epc: epc,
                     sku: tag.sku,
@@ -142,9 +146,9 @@ export default class PlanQAController extends AbstractController {
                     inspeccionados_hoy: inspeccionadosHoy,
                     restantes_antes: restantes,
                     restantes_despues: restantes - 1
-                });
+                };
             } else {
-                res.status(200).json({
+                respuesta = {
                     accion: "PASA",
                     epc: epc,
                     sku: tag.sku,
@@ -159,8 +163,13 @@ export default class PlanQAController extends AbstractController {
                     inspeccionados_hoy: inspeccionadosHoy,
                     restantes: 0,
                     mensaje: "Cuota de inspección completada, prepack pasa directo"
-                });
+                };
             }
+
+            // 5. Emitir evento Socket.IO para que el frontend se actualice en tiempo real
+            emit('qa-escaneo', respuesta);
+
+            res.status(200).json(respuesta);
         } catch (err) {
             console.log(err);
             res.status(500).json({ error: "error_interno", message: (err as Error).message });
