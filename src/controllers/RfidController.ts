@@ -790,7 +790,7 @@ export default class RfidController extends AbstractController {
             const body = req.body || {};
             const epc = typeof body.epc === 'string' ? body.epc.trim() : null;
             const lector_id = typeof body.lector_id === 'string' ? body.lector_id.trim() : null;
-            const etapa = this.normalizarEtapaLectura(body.etapa, lector_id);
+            const etapa = this.normalizarEtapaLectura(body.etapa, lector_id, body.bahia);
             const bahia = this.normalizarBahiaLectura(
                 body.bahia ?? body.bahiaActual ?? body.bahia_actual ?? body.bay
             );
@@ -1151,10 +1151,11 @@ export default class RfidController extends AbstractController {
         return null;
     }
 
-    private normalizarEtapaLectura(raw: any, lectorId?: string | null): string | null {
+    private normalizarEtapaLectura(raw: any, lectorId?: string | null, zona?: any): string | null {
         if (typeof raw !== 'string') return null;
         const etapa = raw.trim().toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
         const lector = String(lectorId || '').toUpperCase();
+        const zonaLectura = String(zona || '').toUpperCase();
 
         if (['BAHIA', 'BAHÍA', 'BAHIA SCAN', 'BAHÍA SCAN', 'POST SORTER', 'POST-SORTER', 'POSTSORTER'].includes(etapa)) {
             return 'EMPAQUETADO';
@@ -1162,7 +1163,14 @@ export default class RfidController extends AbstractController {
 
         // El arco físico de bahía es el paso post-sorter: decide la caja.
         // Si llega como PACKING desde ARCO-BAHIA, lo tratamos como EMPAQUETADO.
-        if (etapa === 'PACKING' && lector.includes('BAHIA') && !lector.includes('CAJA')) {
+        if (
+            etapa === 'PACKING' &&
+            (
+                (lector.includes('BAHIA') && !lector.includes('CAJA')) ||
+                zonaLectura === 'ZONA-PACKING' ||
+                zonaLectura === 'PACKING'
+            )
+        ) {
             return 'EMPAQUETADO';
         }
 
