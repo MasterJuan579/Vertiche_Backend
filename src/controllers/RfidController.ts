@@ -610,7 +610,9 @@ export default class RfidController extends AbstractController {
         try {
             const body = req.body || {};
             const epc = typeof body.epc === 'string' ? body.epc.trim() : '';
-            const bahiaActual = this.normalizarBahiaActual(body.bahiaActual);
+            const bahiaActual = this.normalizarBahiaActual(
+                body.bahiaActual ?? body.bahia_actual ?? body.bahia ?? body.bay
+            );
 
             const faltantes: string[] = [];
             if (!epc) faltantes.push('epc');
@@ -699,7 +701,7 @@ export default class RfidController extends AbstractController {
                 lector_id: `ARCO-BAHIA-${bahia}`,
                 bahia: this.formatBahia(bahia),
                 timestamp: ahora,
-                etapa: 'PACKING',
+                etapa: 'EMPAQUETADO',
                 rssi: typeof body.rssi === 'number' ? body.rssi : null,
                 antenna_port: typeof body.antenna_port === 'string' ? body.antenna_port : null,
                 es_duplicado: false,
@@ -788,10 +790,10 @@ export default class RfidController extends AbstractController {
             const body = req.body || {};
             const epc = typeof body.epc === 'string' ? body.epc.trim() : null;
             const lector_id = typeof body.lector_id === 'string' ? body.lector_id.trim() : null;
-            const etapa = typeof body.etapa === 'string'
-                ? body.etapa.trim().toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ')
-                : null;
-            const bahia = typeof body.bahia === 'string' ? body.bahia.trim() : null;
+            const etapa = this.normalizarEtapaLectura(body.etapa, lector_id, body.bahia);
+            const bahia = this.normalizarBahiaLectura(
+                body.bahia ?? body.bahiaActual ?? body.bahia_actual ?? body.bay
+            );
             const rssi = typeof body.rssi === 'number' ? body.rssi : null;
             const antenna_port = typeof body.antenna_port === 'string' ? body.antenna_port : null;
 
@@ -1137,6 +1139,42 @@ export default class RfidController extends AbstractController {
             return Number.isFinite(n) && n >= 1 ? n : null;
         }
         return null;
+    }
+
+    private normalizarBahiaLectura(raw: any): string | null {
+        const numero = this.normalizarBahiaActual(raw);
+        if (numero) return this.formatBahia(numero);
+        if (typeof raw === 'string') {
+            const value = raw.trim();
+            return value || null;
+        }
+        return null;
+    }
+
+    private normalizarEtapaLectura(raw: any, lectorId?: string | null, zona?: any): string | null {
+        if (typeof raw !== 'string') return null;
+        const etapa = raw.trim().toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
+        const lector = String(lectorId || '').toUpperCase();
+        const zonaLectura = String(zona || '').toUpperCase();
+
+        if (['BAHIA', 'BAHÍA', 'BAHIA SCAN', 'BAHÍA SCAN', 'POST SORTER', 'POST-SORTER', 'POSTSORTER'].includes(etapa)) {
+            return 'EMPAQUETADO';
+        }
+
+        // El arco físico de bahía es el paso post-sorter: decide la caja.
+        // Si llega como PACKING desde ARCO-BAHIA, lo tratamos como EMPAQUETADO.
+        if (
+            etapa === 'PACKING' &&
+            (
+                (lector.includes('BAHIA') && !lector.includes('CAJA')) ||
+                zonaLectura === 'ZONA-PACKING' ||
+                zonaLectura === 'PACKING'
+            )
+        ) {
+            return 'EMPAQUETADO';
+        }
+
+        return etapa;
     }
 
     private formatBahia(bahiaActual: number): string {
