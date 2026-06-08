@@ -876,8 +876,13 @@ export default class RfidController extends AbstractController {
                 anomaliasGeneradas.push(anom);
             }
 
-            // 4) Validación de bahía (sólo en PACKING / SORTING)
-            if ((etapa === 'PACKING' || etapa === 'EMPAQUETADO' || etapa === 'SORTING') && bahia && tag.Tienda?.bahia_asignada) {
+            // 4) Validación de bahía. Zonas genéricas como ZONA-PACKING
+            // identifican el tipo de arco, no una bahía física concreta.
+            if (
+                (etapa === 'PACKING' || etapa === 'EMPAQUETADO' || etapa === 'SORTING') &&
+                this.esBahiaFisica(bahia) &&
+                tag.Tienda?.bahia_asignada
+            ) {
                 if (bahia !== tag.Tienda.bahia_asignada) {
                     const anom = await this.crearAnomalia({
                         epc, lector_id, bahia, etapa,
@@ -968,6 +973,7 @@ export default class RfidController extends AbstractController {
                     epc,
                     lector_id,
                     bahia,
+                    bahiaDestino: lecturaPayload.tag.tienda?.bahia_asignada || null,
                     etapa,
                     timestamp: lectura.timestamp,
                     rssi,
@@ -978,6 +984,7 @@ export default class RfidController extends AbstractController {
                         producto: lecturaPayload.tag.producto || lecturaPayload.tag.sku || 'Prepack sin detalle',
                         proveedor: null,
                         tienda: lecturaPayload.tag.tienda || null,
+                        bahiaDestino: lecturaPayload.tag.tienda?.bahia_asignada || null,
                         tipo_flujo: lecturaPayload.tag.tipo_flujo || null,
                         qa_fallido: !!lecturaPayload.tag.qa_fallido,
                         tag: lecturaPayload.tag,
@@ -1037,13 +1044,31 @@ export default class RfidController extends AbstractController {
                             etapa_actual: 'EN_CAJA',
                         },
                     });
+                    emit('sorter-caja-pick', {
+                        lectura_id: lectura.id,
+                        epc,
+                        lector_id,
+                        etapa,
+                        timestamp,
+                        rssi,
+                        caja_id: cajaId,
+                        cajaDestino,
+                        bahiaActual,
+                        orden_id: lecturaPayload.tag.orden_id || lecturaPayload.tag.pedido_id || null,
+                        producto: lecturaPayload.tag.producto || lecturaPayload.tag.sku || 'Prepack sin detalle',
+                        tienda: lecturaPayload.tag.tienda || null,
+                        tag: {
+                            ...lecturaPayload.tag,
+                            etapa_actual: 'EN_CAJA',
+                        },
+                    });
                 } else {
                     console.warn(`[RfidController.postLectura] No se pudo resolver bahía para EMPAQUETADO epc=${epc}`);
                 }
             }
 
             if (etapa === 'PACKING') {
-                const vinculacion: any = await db.PrepackCaja.findOne({
+                let vinculacion: any = await db.PrepackCaja.findOne({
                     where: { epc },
                     order: [['timestamp_vinculacion', 'DESC']],
                     include: [
@@ -1054,6 +1079,67 @@ export default class RfidController extends AbstractController {
                         },
                     ],
                 });
+
+                if (!vinculacion) {
+                    const bahiaActual = this.normalizarBahiaActual(bahia) ||
+                        this.normalizarBahiaActual(tag.Tienda?.bahia_asignada);
+
+                    if (bahiaActual) {
+                        const cajaDestino = await this.resolverCajaDestino(tag, bahiaActual, undefined);
+                        const cajaId = this.buildCajaId(bahiaActual, cajaDestino, tag.tienda_id);
+                        const timestamp = lectura.timestamp || new Date();
+
+                        await db.Caja.findOrCreate({
+                            where: { caja_id: cajaId },
+                            defaults: {
+                                caja_id: cajaId,
+                                tienda_id: tag.tienda_id,
+                                bahia: this.formatBahia(bahiaActual),
+                                estado: 'EN_LLENADO',
+                                timestamp_creacion: timestamp,
+                            },
+                        });
+
+                        await db.PrepackCaja.create({
+                            epc,
+                            caja_id: cajaId,
+                            timestamp_vinculacion: timestamp,
+                            es_correcto: true,
+                        });
+
+                        emit('sorter-caja-scan', {
+                            lectura_id: lectura.id,
+                            epc,
+                            lector_id,
+                            bahia: this.formatBahia(bahiaActual),
+                            etapa,
+                            timestamp,
+                            rssi,
+                            caja_id: cajaId,
+                            cajaDestino,
+                            bahiaActual,
+                            orden_id: lecturaPayload.tag.orden_id || lecturaPayload.tag.pedido_id || null,
+                            producto: lecturaPayload.tag.producto || lecturaPayload.tag.sku || 'Prepack sin detalle',
+                            tienda: lecturaPayload.tag.tienda || null,
+                            tag: {
+                                ...lecturaPayload.tag,
+                                etapa_actual: 'EN_CAJA',
+                            },
+                        });
+
+                        vinculacion = await db.PrepackCaja.findOne({
+                            where: { epc },
+                            order: [['timestamp_vinculacion', 'DESC']],
+                            include: [
+                                {
+                                    model: db.Caja,
+                                    required: false,
+                                    include: [{ model: db.Tienda, required: false }],
+                                },
+                            ],
+                        });
+                    }
+                }
 
                 if (vinculacion) {
                     const cajaId = vinculacion.caja_id;
@@ -1149,6 +1235,10 @@ export default class RfidController extends AbstractController {
             return value || null;
         }
         return null;
+    }
+
+    private esBahiaFisica(raw: any): boolean {
+        return typeof raw === 'string' && /^BAHIA-\d+$/i.test(raw.trim());
     }
 
     private normalizarEtapaLectura(raw: any, lectorId?: string | null, zona?: any): string | null {
