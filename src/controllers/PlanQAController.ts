@@ -186,7 +186,38 @@ export default class PlanQAController extends AbstractController {
 
             const restantes = Math.max(0, cuota - inspeccionadosHoy);
 
-            // 4. Decidir acción y armar respuesta
+            // 4. Checar si el proveedor tiene un rechazo total hoy (5+ defectos = score 1.0)
+            const rechazoTotal = await db.InspeccionQA.findOne({
+                where: {
+                    proveedor_id: proveedor.id,
+                    score: 1.0,
+                    fecha: {
+                        [Op.gte]: hoy,
+                        [Op.lt]: manana
+                    }
+                }
+            });
+
+            if (rechazoTotal) {
+                const respuesta = {
+                    accion: "RECHAZADO_TOTAL",
+                    epc: epc,
+                    sku: tag.sku,
+                    talla: tag.talla,
+                    color: tag.color,
+                    proveedor_id: proveedor.id,
+                    proveedor_nombre: proveedor.nombre,
+                    proveedor_codigo: proveedor.codigo,
+                    stars: stars,
+                    level: proveedor.level,
+                    mensaje: "Proveedor bloqueado hoy — se detectaron todos los defectos en un prepack anterior"
+                };
+                emit('qa-escaneo', respuesta);
+                res.status(200).json(respuesta);
+                return;
+            }
+
+            // 5. Decidir acción y armar respuesta
             let respuesta: any;
 
             if (restantes > 0) {
