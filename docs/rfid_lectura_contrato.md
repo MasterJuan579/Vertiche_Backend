@@ -15,6 +15,28 @@ Endpoint pensado para que el lector RFID físico (ESP32 + módulo RFID) reporte 
 
 ## `POST /rfid/lectura`
 
+### Arco post-sorter: Bahía a Caja
+
+La pantalla **Arco -> Caja** se detona con una lectura `PACKING` en
+`ZONA-PACKING`. El nombre del `lector_id` no determina el flujo; para este
+caso manda la combinación `etapa + bahia`.
+
+```json
+{
+  "epc": "A3:EB:63:56",
+  "lector_id": "ESP32-QA-01",
+  "etapa": "PACKING",
+  "bahia": "ZONA-PACKING",
+  "rssi": -65
+}
+```
+
+El backend obtiene la bahía desde `Tag -> Tienda.bahia_asignada`, crea o
+reutiliza la asignación a Caja 1, 2 o 3, y emite:
+
+- `sorter-caja-scan` para **Arco -> Caja**.
+- `sorter-caja-pick` para **Caja 1/2/3**.
+
 ### Request body
 ```json
 {
