@@ -38,6 +38,7 @@ import { Op } from "sequelize";
 import AbstractController from "./AbstractController";
 import db from "../models";
 import { emit } from "../realtime/socketIo";
+import { verifyToken } from "../middleware/verifyToken";
 
 const VENTANA_DUPLICADO_MS = 5_000;
 const UMBRAL_RSSI_BAJO = -75;
@@ -74,14 +75,17 @@ export default class RfidController extends AbstractController {
     }
 
     protected initRoutes(): void {
+        // Público — el ESP32 lo usa para verificar conectividad sin token
         this.router.get('/health', this.getHealth.bind(this));
-        this.router.get('/kpi', this.getKpi.bind(this));
-        this.router.post('/lectura', this.postLectura.bind(this));
-        this.router.post('/bahia/scan', this.postBahiaScan.bind(this));
-        this.router.post('/orden-compra', this.postCrearOrdenCompra.bind(this));
-        this.router.get('/orden/:orden_id/prepacks', this.getPrepacksDeOrden.bind(this));
-        this.router.post('/asignar-epc', this.postAsignarEpc.bind(this));
-        this.router.post('/uid-detectado', this.postUidDetectado.bind(this));
+
+        // Protegidos — requieren JWT válido de Cognito
+        this.router.get('/kpi',                        verifyToken, this.getKpi.bind(this));
+        this.router.post('/lectura',                   verifyToken, this.postLectura.bind(this));
+        this.router.post('/bahia/scan',                verifyToken, this.postBahiaScan.bind(this));
+        this.router.post('/orden-compra',              verifyToken, this.postCrearOrdenCompra.bind(this));
+        this.router.get('/orden/:orden_id/prepacks',   verifyToken, this.getPrepacksDeOrden.bind(this));
+        this.router.post('/asignar-epc',               verifyToken, this.postAsignarEpc.bind(this));
+        this.router.post('/uid-detectado',             verifyToken, this.postUidDetectado.bind(this));
     }
 
     /**
