@@ -70,11 +70,18 @@ export default class EventoLecturaController extends AbstractController {
                 const cajaPayload = await this.buildCajaPayload(lecturaPayload);
                 if (cajaPayload) {
                     emit('sorter-caja-scan', cajaPayload);
+                    emit('sorter-caja-pick', cajaPayload);
                 }
             }
 
             if (etapa === 'PACKING') {
-                const pickPayload = await this.buildCajaPickPayload(lecturaPayload);
+                let pickPayload = await this.buildCajaPickPayload(lecturaPayload);
+                if (!pickPayload) {
+                    pickPayload = await this.buildCajaPayload(lecturaPayload);
+                    if (pickPayload) {
+                        emit('sorter-caja-scan', pickPayload);
+                    }
+                }
                 if (pickPayload) {
                     emit('sorter-caja-pick', pickPayload);
                 }
@@ -188,6 +195,7 @@ export default class EventoLecturaController extends AbstractController {
             epc: lecturaPayload.epc,
             lector_id: lecturaPayload.lector_id,
             bahia: lecturaPayload.bahia,
+            bahiaDestino: tag?.tienda?.bahia_asignada || null,
             etapa: lecturaPayload.etapa,
             timestamp: lecturaPayload.timestamp,
             rssi: lecturaPayload.rssi,
@@ -198,6 +206,7 @@ export default class EventoLecturaController extends AbstractController {
                 producto: tag?.producto || tag?.sku || 'Prepack sin detalle',
                 proveedor: tag?.proveedor?.nombre || null,
                 tienda: tag?.tienda || null,
+                bahiaDestino: tag?.tienda?.bahia_asignada || null,
                 tipo_flujo: tag?.tipo_flujo || null,
                 qa_fallido: !!tag?.qa_fallido,
                 tag,
