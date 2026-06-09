@@ -22,6 +22,7 @@ import { Request, Response } from "express";
 import { Op, ValidationError, UniqueConstraintError, ForeignKeyConstraintError } from "sequelize";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 
 export default class TagController extends AbstractController {
     //Singleton
@@ -32,6 +33,7 @@ export default class TagController extends AbstractController {
     }
 
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarTags', this.getListarTags.bind(this));
         this.router.post('/crearTag', this.postCrearTag.bind(this));
         this.router.get('/buscarSku/:sku', this.getBuscarPorSku.bind(this));

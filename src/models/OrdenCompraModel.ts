@@ -51,6 +51,13 @@ module.exports = (sequelize:any, DataTypes:any)=>{
             OrdenCompraModel.hasMany(models.Palet,{
                 foreignKey:'orden_id'
             });
+            //OrdenCompra 1:1 OrdenAgrupador (chip maestro opcional)
+            //Solo existe si el supervisor activo el flag agruparOC al crear la OC.
+            if (models.OrdenAgrupador) {
+                OrdenCompraModel.hasOne(models.OrdenAgrupador,{
+                    foreignKey:'orden_id'
+                });
+            }
         }
     }
     OrdenCompraModel.init({

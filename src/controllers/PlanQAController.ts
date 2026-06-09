@@ -1,17 +1,19 @@
 /* ============================================================================
  * Archivo: PlanQAController.ts
- * Descripción: Controller para el plan de inspección QA. Calcula cuántos
- *              prepacks revisar por proveedor según su calificación (stars).
- *              Incluye endpoint de escaneo para decidir si se revisa o no.
- *              Emite eventos Socket.IO para actualizar el frontend en tiempo real.
- *              Reglas:
- *                stars >= 4.5 → cuota = 3
- *                stars >= 3.0 → cuota = 5
- *                stars < 3.0  → cuota = 7
+ * Descripción: Controller para el plan de inspección QA.
+ *              Cuota de inspección = porcentaje de prepacks del día según nivel.
+ *
+ *              ELITE (stars >= 4.5) → 10% de prepacks del día (mínimo 1)
+ *              MEDIA (stars >= 3.0) → 35% de prepacks del día (mínimo 2)
+ *              BAJA  (stars < 3.0)  → 70% de prepacks del día (mínimo 3)
+ *
+ *              Si no hay prepacks registrados hoy, usa fallback: 3, 5, 7.
+ *              Emite evento Socket.IO 'qa-escaneo' al escanear.
  * ============================================================================ */
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 import { Op } from "sequelize";
 import { emit } from "../realtime/socketIo";
 
@@ -23,14 +25,9 @@ export default class PlanQAController extends AbstractController {
     }
 
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/pendientes', this.getPendientes.bind(this));
         this.router.post('/escanear', this.postEscanear.bind(this));
-    }
-
-    private calcularCuota(stars: number): number {
-        if (stars >= 4.5) return 3;
-        if (stars >= 3.0) return 5;
-        return 7;
     }
 
     private getRangoHoy(): { hoy: Date; manana: Date } {
@@ -41,7 +38,58 @@ export default class PlanQAController extends AbstractController {
         return { hoy, manana };
     }
 
-    private async getPendientes(_req: Request, res: Response): Promise<void> {
+    /**
+     * Calcula cuota de inspección basada en porcentaje de prepacks del día.
+     * @param stars - calificación del proveedor
+     * @param totalPrepacksHoy - prepacks registrados hoy para ese proveedor
+     * @returns cuota de inspección
+     */
+    private calcularCuota(stars: number, totalPrepacksHoy: number): number {
+        let porcentaje: number;
+        let minimo: number;
+        let fallback: number;
+
+        if (stars >= 4.5) {
+            porcentaje = 0.10;
+            minimo = 1;
+            fallback = 3;
+        } else if (stars >= 3.0) {
+            porcentaje = 0.35;
+            minimo = 2;
+            fallback = 5;
+        } else {
+            porcentaje = 0.70;
+            minimo = 3;
+            fallback = 7;
+        }
+
+        // Si no hay prepacks hoy, usar fallback
+        if (totalPrepacksHoy === 0) return fallback;
+
+        // Calcular porcentaje, respetar mínimo
+        return Math.max(minimo, Math.ceil(totalPrepacksHoy * porcentaje));
+    }
+
+    /**
+     * Cuenta prepacks (Tags) registrados hoy para un proveedor
+     */
+    private async contarPrepacksHoy(proveedorId: number, hoy: Date, manana: Date): Promise<number> {
+        return await db.Tag.count({
+            where: {
+                proveedor_id: proveedorId,
+                registrado_en: {
+                    [Op.gte]: hoy,
+                    [Op.lt]: manana
+                }
+            }
+        });
+    }
+
+    /**
+     * GET /PlanQA/pendientes
+     * Devuelve la lista de proveedores con cuota, inspeccionados hoy y restantes
+     */
+    private async getPendientes(req: Request, res: Response): Promise<void> {
         try {
             const proveedores = await db.Proveedor.findAll({
                 attributes: ['id', 'nombre', 'codigo', 'stars', 'level', 'color', 'origin']
@@ -52,8 +100,14 @@ export default class PlanQAController extends AbstractController {
 
             for (const prov of proveedores) {
                 const stars = parseFloat(prov.stars) || 0;
-                const cuota = this.calcularCuota(stars);
 
+                // Contar prepacks de hoy para este proveedor
+                const totalPrepacksHoy = await this.contarPrepacksHoy(prov.id, hoy, manana);
+
+                // Calcular cuota basada en porcentaje
+                const cuota = this.calcularCuota(stars, totalPrepacksHoy);
+
+                // Contar inspecciones de hoy
                 const inspeccionadosHoy = await db.InspeccionQA.count({
                     where: {
                         proveedor_id: prov.id,
@@ -74,6 +128,7 @@ export default class PlanQAController extends AbstractController {
                     level: prov.level,
                     color: prov.color,
                     origin: prov.origin,
+                    total_prepacks_hoy: totalPrepacksHoy,
                     cuota: cuota,
                     inspeccionados_hoy: inspeccionadosHoy,
                     restantes: restantes
@@ -87,6 +142,10 @@ export default class PlanQAController extends AbstractController {
         }
     }
 
+    /**
+     * POST /PlanQA/escanear
+     * Recibe un EPC, identifica el proveedor, y decide si se debe revisar o pasa directo.
+     */
     private async postEscanear(req: Request, res: Response): Promise<void> {
         try {
             const { epc } = req.body;
@@ -112,8 +171,10 @@ export default class PlanQAController extends AbstractController {
 
             // 3. Calcular cuota y restantes
             const stars = parseFloat(proveedor.stars) || 0;
-            const cuota = this.calcularCuota(stars);
             const { hoy, manana } = this.getRangoHoy();
+
+            const totalPrepacksHoy = await this.contarPrepacksHoy(proveedor.id, hoy, manana);
+            const cuota = this.calcularCuota(stars, totalPrepacksHoy);
 
             const inspeccionadosHoy = await db.InspeccionQA.count({
                 where: {
@@ -127,7 +188,38 @@ export default class PlanQAController extends AbstractController {
 
             const restantes = Math.max(0, cuota - inspeccionadosHoy);
 
-            // 4. Decidir acción y armar respuesta
+            // 4. Checar si el proveedor tiene un rechazo total hoy (5+ defectos = score 1.0)
+            const rechazoTotal = await db.InspeccionQA.findOne({
+                where: {
+                    proveedor_id: proveedor.id,
+                    score: 1.0,
+                    fecha: {
+                        [Op.gte]: hoy,
+                        [Op.lt]: manana
+                    }
+                }
+            });
+
+            if (rechazoTotal) {
+                const respuesta = {
+                    accion: "RECHAZADO_TOTAL",
+                    epc: epc,
+                    sku: tag.sku,
+                    talla: tag.talla,
+                    color: tag.color,
+                    proveedor_id: proveedor.id,
+                    proveedor_nombre: proveedor.nombre,
+                    proveedor_codigo: proveedor.codigo,
+                    stars: stars,
+                    level: proveedor.level,
+                    mensaje: "Proveedor bloqueado hoy — se detectaron todos los defectos en un prepack anterior"
+                };
+                emit('qa-escaneo', respuesta);
+                res.status(200).json(respuesta);
+                return;
+            }
+
+            // 5. Decidir acción y armar respuesta
             let respuesta: any;
 
             if (restantes > 0) {
@@ -142,6 +234,7 @@ export default class PlanQAController extends AbstractController {
                     proveedor_codigo: proveedor.codigo,
                     stars: stars,
                     level: proveedor.level,
+                    total_prepacks_hoy: totalPrepacksHoy,
                     cuota: cuota,
                     inspeccionados_hoy: inspeccionadosHoy,
                     restantes_antes: restantes,
@@ -159,6 +252,7 @@ export default class PlanQAController extends AbstractController {
                     proveedor_codigo: proveedor.codigo,
                     stars: stars,
                     level: proveedor.level,
+                    total_prepacks_hoy: totalPrepacksHoy,
                     cuota: cuota,
                     inspeccionados_hoy: inspeccionadosHoy,
                     restantes: 0,
@@ -166,7 +260,7 @@ export default class PlanQAController extends AbstractController {
                 };
             }
 
-            // 5. Emitir evento Socket.IO para que el frontend se actualice en tiempo real
+            // 5. Emitir evento Socket.IO
             emit('qa-escaneo', respuesta);
 
             res.status(200).json(respuesta);
