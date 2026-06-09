@@ -582,6 +582,25 @@ export default class RfidController extends AbstractController {
                 include: [{ model: db.Tienda, attributes: ['tienda_id', 'nombre', 'bahia_asignada'] }],
             });
 
+            // Incrementar total_recibidos en Pedido y OrdenCompra en la base de datos
+            if (tagActualizado) {
+                if (tagActualizado.pedido_id) {
+                    await db.Pedido.increment('total_recibidos', {
+                        by: 1,
+                        where: { pedido_id: tagActualizado.pedido_id }
+                    });
+                }
+                if (tagActualizado.palet_id) {
+                    const palet: any = await db.Palet.findByPk(tagActualizado.palet_id);
+                    if (palet && palet.orden_id) {
+                        await db.OrdenCompra.increment('total_recibidos', {
+                            by: 1,
+                            where: { orden_id: palet.orden_id }
+                        });
+                    }
+                }
+            }
+
             // Emit por socket para que las pantallas refresquen el listado
             emit('prepack-asignado', {
                 epc_anterior: epc_placeholder,
