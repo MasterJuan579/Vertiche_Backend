@@ -81,11 +81,35 @@ export default class RfidController extends AbstractController {
         // Protegidos — requieren JWT válido de Cognito
         this.router.get('/kpi',                        verifyToken, this.getKpi.bind(this));
         this.router.post('/lectura',                   verifyToken, this.postLectura.bind(this));
+        this.router.get('/bahia/tiendas',              verifyToken, this.getTiendasDeBahia.bind(this));
         this.router.post('/bahia/scan',                verifyToken, this.postBahiaScan.bind(this));
         this.router.post('/orden-compra',              verifyToken, this.postCrearOrdenCompra.bind(this));
         this.router.get('/orden/:orden_id/prepacks',   verifyToken, this.getPrepacksDeOrden.bind(this));
         this.router.post('/asignar-epc',               verifyToken, this.postAsignarEpc.bind(this));
         this.router.post('/uid-detectado',             verifyToken, this.postUidDetectado.bind(this));
+    }
+
+    /**
+     * GET /rfid/bahia/tiendas
+     * Catalogo exclusivo del sorter: solo tiendas con bahia y caja configuradas.
+     */
+    private async getTiendasDeBahia(_req: Request, res: Response): Promise<void> {
+        try {
+            const tiendas = await db.sequelize.query(
+                `SELECT tienda_id, nombre, ciudad, region, bahia_asignada, caja_asignada
+                 FROM Tienda
+                 WHERE caja_asignada BETWEEN 1 AND 3
+                 ORDER BY bahia_asignada, caja_asignada`,
+                { type: db.Sequelize.QueryTypes.SELECT }
+            );
+            res.status(200).json(tiendas);
+        } catch (err: any) {
+            console.error('[RfidController.getTiendasDeBahia]', err);
+            res.status(500).json({
+                error: 'error_interno',
+                message: err.message || 'Error al listar la configuracion de bahias',
+            });
+        }
     }
 
     /**
@@ -670,7 +694,27 @@ export default class RfidController extends AbstractController {
                 return;
             }
 
-            const cajaDestino = await this.resolverCajaDestino(tag, bahia, t);
+            const asignacion = await this.getAsignacionSorter(tag.tienda_id, t);
+            if (!asignacion) {
+                await t.rollback();
+                res.status(409).json({
+                    error: 'tienda_sin_asignacion',
+                    message: `La tienda ${tag.tienda_id} no tiene bahia y caja configuradas para el sorter.`,
+                });
+                return;
+            }
+            if (asignacion.bahia !== bahia) {
+                await t.rollback();
+                res.status(409).json({
+                    error: 'bahia_incorrecta',
+                    message: `La tienda ${tag.tienda_id} corresponde a BAHIA-${asignacion.bahia}, no a BAHIA-${bahia}.`,
+                    bahia_esperada: asignacion.bahia,
+                    bahia_actual: bahia,
+                });
+                return;
+            }
+
+            const cajaDestino = asignacion.caja;
             const cajaId = this.buildCajaId(bahia, cajaDestino, tag.tienda_id);
             const ahora = new Date();
 
@@ -691,7 +735,7 @@ export default class RfidController extends AbstractController {
                 order: [['timestamp_vinculacion', 'DESC']],
                 transaction: t,
             });
-            if (!vinculacionExistente) {
+            if (!vinculacionExistente || vinculacionExistente.caja_id !== cajaId) {
                 await db.PrepackCaja.create({
                     epc,
                     caja_id: cajaId,
@@ -1020,7 +1064,7 @@ export default class RfidController extends AbstractController {
                         where: { epc },
                         order: [['timestamp_vinculacion', 'DESC']],
                     });
-                    if (!vinculacionExistente) {
+                    if (!vinculacionExistente || vinculacionExistente.caja_id !== cajaId) {
                         await db.PrepackCaja.create({
                             epc,
                             caja_id: cajaId,
@@ -1084,29 +1128,37 @@ export default class RfidController extends AbstractController {
                     ],
                 });
 
-                if (!vinculacion) {
-                    const bahiaActual = this.normalizarBahiaActual(bahia) ||
-                        this.normalizarBahiaActual(tag.Tienda?.bahia_asignada);
+                const bahiaActualConfigurada = this.normalizarBahiaActual(bahia) ||
+                    this.normalizarBahiaActual(tag.Tienda?.bahia_asignada);
 
-                    if (bahiaActual) {
-                        const cajaDestino = await this.resolverCajaDestino(tag, bahiaActual, undefined);
-                        const cajaId = this.buildCajaId(bahiaActual, cajaDestino, tag.tienda_id);
+                if (bahiaActualConfigurada) {
+                    const cajaDestinoConfigurada = await this.resolverCajaDestino(
+                        tag,
+                        bahiaActualConfigurada,
+                        undefined
+                    );
+                    const cajaIdConfigurada = this.buildCajaId(
+                        bahiaActualConfigurada,
+                        cajaDestinoConfigurada,
+                        tag.tienda_id
+                    );
+
+                    if (!vinculacion || vinculacion.caja_id !== cajaIdConfigurada) {
                         const timestamp = lectura.timestamp || new Date();
 
                         await db.Caja.findOrCreate({
-                            where: { caja_id: cajaId },
+                            where: { caja_id: cajaIdConfigurada },
                             defaults: {
-                                caja_id: cajaId,
+                                caja_id: cajaIdConfigurada,
                                 tienda_id: tag.tienda_id,
-                                bahia: this.formatBahia(bahiaActual),
+                                bahia: this.formatBahia(bahiaActualConfigurada),
                                 estado: 'EN_LLENADO',
                                 timestamp_creacion: timestamp,
                             },
                         });
-
                         await db.PrepackCaja.create({
                             epc,
-                            caja_id: cajaId,
+                            caja_id: cajaIdConfigurada,
                             timestamp_vinculacion: timestamp,
                             es_correcto: true,
                         });
@@ -1115,13 +1167,13 @@ export default class RfidController extends AbstractController {
                             lectura_id: lectura.id,
                             epc,
                             lector_id,
-                            bahia: this.formatBahia(bahiaActual),
+                            bahia: this.formatBahia(bahiaActualConfigurada),
                             etapa,
                             timestamp,
                             rssi,
-                            caja_id: cajaId,
-                            cajaDestino,
-                            bahiaActual,
+                            caja_id: cajaIdConfigurada,
+                            cajaDestino: cajaDestinoConfigurada,
+                            bahiaActual: bahiaActualConfigurada,
                             orden_id: lecturaPayload.tag.orden_id || lecturaPayload.tag.pedido_id || null,
                             producto: lecturaPayload.tag.producto || lecturaPayload.tag.sku || 'Prepack sin detalle',
                             tienda: lecturaPayload.tag.tienda || null,
@@ -1131,18 +1183,19 @@ export default class RfidController extends AbstractController {
                             },
                         });
 
-                        vinculacion = await db.PrepackCaja.findOne({
-                            where: { epc },
-                            order: [['timestamp_vinculacion', 'DESC']],
-                            include: [
-                                {
-                                    model: db.Caja,
-                                    required: false,
-                                    include: [{ model: db.Tienda, required: false }],
-                                },
-                            ],
-                        });
                     }
+
+                    vinculacion = await db.PrepackCaja.findOne({
+                        where: { epc },
+                        order: [['timestamp_vinculacion', 'DESC']],
+                        include: [
+                            {
+                                model: db.Caja,
+                                required: false,
+                                include: [{ model: db.Tienda, required: false }],
+                            },
+                        ],
+                    });
                 }
 
                 if (vinculacion) {
@@ -1287,25 +1340,39 @@ export default class RfidController extends AbstractController {
     }
 
     private async resolverCajaDestino(tag: any, bahiaActual: number, transaction: any): Promise<number> {
-        const vinculacion: any = await db.PrepackCaja.findOne({
-            where: { epc: tag.epc },
-            order: [['timestamp_vinculacion', 'DESC']],
-            transaction,
-        });
-        const cajaExistente = this.parseCajaDestino(vinculacion?.caja_id);
-        if (cajaExistente) return cajaExistente;
+        const asignacion = await this.getAsignacionSorter(tag.tienda_id, transaction);
+        if (!asignacion) {
+            throw new Error(`La tienda ${tag.tienda_id} no tiene bahia y caja configuradas para el sorter.`);
+        }
+        if (asignacion.bahia !== bahiaActual) {
+            throw new Error(
+                `La tienda ${tag.tienda_id} corresponde a BAHIA-${asignacion.bahia}, no a BAHIA-${bahiaActual}.`
+            );
+        }
 
-        return this.cajaDeterministicaPorTienda(tag.tienda_id, bahiaActual);
+        return asignacion.caja;
     }
 
-    private cajaDeterministicaPorTienda(tiendaId: string, bahiaActual: number): number {
-        const source = `${tiendaId || ''}:${bahiaActual}`;
-        let hash = 0;
-        for (let i = 0; i < source.length; i++) {
-            hash = ((hash << 5) - hash) + source.charCodeAt(i);
-            hash |= 0;
-        }
-        return (Math.abs(hash) % 3) + 1;
+    private async getAsignacionSorter(
+        tiendaId: string,
+        transaction?: any
+    ): Promise<{ bahia: number; caja: number } | null> {
+        const rows: any[] = await db.sequelize.query(
+            `SELECT bahia_asignada, caja_asignada
+             FROM Tienda
+             WHERE tienda_id = :tiendaId
+             LIMIT 1`,
+            {
+                replacements: { tiendaId },
+                type: db.Sequelize.QueryTypes.SELECT,
+                transaction,
+            }
+        );
+        const row = rows[0];
+        const bahia = this.normalizarBahiaActual(row?.bahia_asignada);
+        const caja = Number(row?.caja_asignada);
+        if (!bahia || !Number.isInteger(caja) || caja < 1 || caja > 3) return null;
+        return { bahia, caja };
     }
 
     private async crearTagDesdeScan(body: any, epc: string, transaction: any): Promise<any | null> {
