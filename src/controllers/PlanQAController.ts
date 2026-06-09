@@ -13,6 +13,7 @@
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 import { Op } from "sequelize";
 import { emit } from "../realtime/socketIo";
 
@@ -24,6 +25,7 @@ export default class PlanQAController extends AbstractController {
     }
 
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/pendientes', this.getPendientes.bind(this));
         this.router.post('/escanear', this.postEscanear.bind(this));
     }

@@ -13,6 +13,7 @@ import { Request, Response } from "express";
 import { Op } from "sequelize";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 import { getRangoHoy } from "../utils/qaUtils";
 
 export default class TurnoController extends AbstractController {
@@ -22,6 +23,7 @@ export default class TurnoController extends AbstractController {
     }
 
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/resumen', this.getResumen.bind(this));
     }
 

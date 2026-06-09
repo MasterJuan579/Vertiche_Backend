@@ -8,6 +8,7 @@
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 
 export default class PaletEtapaLogController extends AbstractController {
     //Singleton
@@ -17,6 +18,7 @@ export default class PaletEtapaLogController extends AbstractController {
             (this._instance = new this("PaletEtapaLog"));
     }
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarLogs',
             this.getListarLogs.bind(this));
         this.router.post('/crearLog',
