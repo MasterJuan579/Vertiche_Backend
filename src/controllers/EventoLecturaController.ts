@@ -244,7 +244,7 @@ export default class EventoLecturaController extends AbstractController {
                 where: { epc: tag.epc },
                 order: [['timestamp_vinculacion', 'DESC']],
             });
-            if (!vinculacionExistente) {
+            if (!vinculacionExistente || vinculacionExistente.caja_id !== cajaId) {
                 await db.PrepackCaja.create({
                     epc: tag.epc,
                     caja_id: cajaId,
@@ -256,6 +256,7 @@ export default class EventoLecturaController extends AbstractController {
             await this.markTagInCaja(tag);
         } catch (err) {
             console.log('[EventoLectura.empaquetado] No se pudo preparar caja:', err);
+            return null;
         }
 
         return {
@@ -297,15 +298,15 @@ export default class EventoLecturaController extends AbstractController {
                 },
             ],
         });
-        if (!vinculacion) return null;
+        const tienda = tag.tienda || vinculacion?.Caja?.Tienda || null;
+        const bahiaActual = this.parseBayNumber(lecturaPayload.bahia) ||
+            this.parseBayNumber(tienda?.bahia_asignada) ||
+            this.parseBayNumber(vinculacion?.Caja?.bahia);
+        if (!bahiaActual) return null;
 
-        const cajaId = vinculacion.caja_id;
-        const cajaDestino = this.parseCajaDestino(cajaId);
-        const caja = vinculacion.Caja;
-        const tienda = tag.tienda || caja?.Tienda || null;
-        const bahiaActual = this.parseBayNumber(caja?.bahia) ||
-            this.parseBayNumber(lecturaPayload.bahia) ||
-            this.parseBayNumber(tienda?.bahia_asignada);
+        const cajaDestino = await this.resolverCajaDestino(tag, bahiaActual);
+        const cajaId = this.buildCajaId(bahiaActual, cajaDestino, tag.tienda_id);
+        if (!vinculacion || vinculacion.caja_id !== cajaId) return null;
 
         return {
             lectura_id: lecturaPayload.id,
@@ -337,24 +338,28 @@ export default class EventoLecturaController extends AbstractController {
     }
 
     private async resolverCajaDestino(tag: any, bahiaActual: number): Promise<number> {
-        const vinculacion = await db.PrepackCaja.findOne({
-            where: { epc: tag.epc },
-            order: [['timestamp_vinculacion', 'DESC']],
-        });
-        const cajaExistente = this.parseCajaDestino(vinculacion?.caja_id);
-        if (cajaExistente) return cajaExistente;
+        const rows: any[] = await db.sequelize.query(
+            `SELECT bahia_asignada, caja_asignada
+             FROM Tienda
+             WHERE tienda_id = :tiendaId
+             LIMIT 1`,
+            {
+                replacements: { tiendaId: tag.tienda_id },
+                type: db.Sequelize.QueryTypes.SELECT,
+            }
+        );
+        const row = rows[0];
+        const bahiaEsperada = this.parseBayNumber(row?.bahia_asignada);
+        const cajaAsignada = Number(row?.caja_asignada);
 
-        return this.cajaDeterministicaPorTienda(tag.tienda_id, bahiaActual);
-    }
-
-    private cajaDeterministicaPorTienda(tiendaId: string, bahiaActual: number): number {
-        const source = `${tiendaId || ''}:${bahiaActual}`;
-        let hash = 0;
-        for (let i = 0; i < source.length; i++) {
-            hash = ((hash << 5) - hash) + source.charCodeAt(i);
-            hash |= 0;
+        if (!bahiaEsperada || bahiaEsperada !== bahiaActual) {
+            throw new Error(`La tienda ${tag.tienda_id} no corresponde a BAHIA-${bahiaActual}.`);
         }
-        return (Math.abs(hash) % CAJA_COUNT) + 1;
+        if (!Number.isInteger(cajaAsignada) || cajaAsignada < 1 || cajaAsignada > CAJA_COUNT) {
+            throw new Error(`La tienda ${tag.tienda_id} no tiene caja_asignada valida.`);
+        }
+
+        return cajaAsignada;
     }
 
     private parseCajaDestino(cajaId: string): number | null {
