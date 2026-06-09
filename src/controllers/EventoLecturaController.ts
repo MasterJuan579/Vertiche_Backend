@@ -7,6 +7,7 @@
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 import { emit } from "../realtime/socketIo";
 
 const ETAPA_A_ESTADO_PREPACK: Record<string, string> = {
@@ -30,6 +31,7 @@ export default class EventoLecturaController extends AbstractController {
             (this._instance = new this("EventoLectura"));
     }
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarLecturas',
             this.getListarLecturas.bind(this));
         this.router.post('/crearLectura',

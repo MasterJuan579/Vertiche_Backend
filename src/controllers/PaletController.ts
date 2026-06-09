@@ -18,6 +18,7 @@
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 
 export default class PaletController extends AbstractController {
     //Singleton
@@ -27,6 +28,7 @@ export default class PaletController extends AbstractController {
             (this._instance = new this("Palet"));
     }
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarPalets',
             this.getListarPalets.bind(this));
         this.router.post('/crearPalet',

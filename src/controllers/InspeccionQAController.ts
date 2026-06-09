@@ -39,6 +39,7 @@ import { Request, Response } from 'express';
 import { Op, fn, col, literal } from 'sequelize';
 import AbstractController from './AbstractController';
 import db from '../models';
+import { verifyToken } from '../middleware/verifyToken';
 import { emit } from '../realtime/socketIo';
 
 export default class InspeccionQAController extends AbstractController {
@@ -48,6 +49,7 @@ export default class InspeccionQAController extends AbstractController {
     }
 
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarInspecciones', this.getListarInspecciones.bind(this));
         this.router.post('/crearInspeccion',   this.postCrearInspeccion.bind(this));
         this.router.get('/:id',                this.getInspeccionPorId.bind(this));

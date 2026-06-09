@@ -16,6 +16,7 @@
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 
 const SEED_DEFECTOS = [
     { nombre: 'Mala calidad en la tela', penalizacion: 1.0, descripcion: 'Tela de mala calidad que no cumple estándares mínimos' },
@@ -35,6 +36,7 @@ export default class CatalogoDefectoController extends AbstractController {
     }
 
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listar',    this.getListar.bind(this));
         this.router.get('/todos',     this.getTodos.bind(this));
         this.router.post('/sembrar',  this.postSembrar.bind(this));

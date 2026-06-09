@@ -7,6 +7,7 @@
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 
 export default class OrdenCompraController extends AbstractController {
     //Singleton
@@ -17,6 +18,7 @@ export default class OrdenCompraController extends AbstractController {
     }
     
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarOrdenes', this.getListarOrdenes.bind(this));
         this.router.post('/crearOrden', this.postCrearOrden.bind(this));
         this.router.get('/:id', this.getOrdenPorId.bind(this));

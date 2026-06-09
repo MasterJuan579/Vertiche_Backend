@@ -7,6 +7,7 @@
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 
 export default class PedidoController extends AbstractController {
     //Singleton
@@ -16,6 +17,7 @@ export default class PedidoController extends AbstractController {
             (this._instance = new this("Pedido"));
     }
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarPedidos',
             this.getListarPedidos.bind(this));
         this.router.post('/crearPedido',

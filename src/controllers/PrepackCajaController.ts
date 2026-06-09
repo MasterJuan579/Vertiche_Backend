@@ -7,6 +7,7 @@
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 
 export default class PrepackCajaController extends AbstractController {
     //Singleton
@@ -16,6 +17,7 @@ export default class PrepackCajaController extends AbstractController {
             (this._instance = new this("PrepackCaja"));
     }
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarVinculaciones',
             this.getListarVinculaciones.bind(this));
         this.router.post('/crearVinculacion',
