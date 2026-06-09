@@ -87,6 +87,12 @@ export default class RfidController extends AbstractController {
         this.router.get('/orden/:orden_id/prepacks',   verifyToken, this.getPrepacksDeOrden.bind(this));
         this.router.post('/asignar-epc',               verifyToken, this.postAsignarEpc.bind(this));
         this.router.post('/uid-detectado',             verifyToken, this.postUidDetectado.bind(this));
+
+        // ── Agrupador (chip maestro opcional por OC) ─────────────────────
+        this.router.get('/orden/:orden_id/agrupador',  verifyToken, this.getAgrupador.bind(this));
+        this.router.post('/orden-agrupador',           verifyToken, this.postCrearAgrupador.bind(this));
+        this.router.post('/asignar-epc-agrupador',     verifyToken, this.postAsignarEpcAgrupador.bind(this));
+        this.router.delete('/orden-agrupador/:orden_id', verifyToken, this.deleteAgrupador.bind(this));
     }
 
     /**
@@ -467,6 +473,20 @@ export default class RfidController extends AbstractController {
                 }
             }
 
+            // ── Agrupador opcional ───────────────────────────────────────
+            // Si el supervisor marco el flag `agruparOC: true`, creamos un
+            // placeholder OrdenAgrupador en la MISMA transaccion. Coexiste
+            // con los Tags individuales: el supervisor puede asignar el chip
+            // maestro Y/O los chips individuales segun convenga.
+            let agrupador: any = null;
+            if (body.agruparOC === true) {
+                const epcAgrupadorPlaceholder = `GRP-PENDIENTE-${orden_id}`;
+                agrupador = await db.OrdenAgrupador.create({
+                    orden_id,
+                    epc: epcAgrupadorPlaceholder,
+                }, { transaction: t });
+            }
+
             await t.commit();
             res.status(201).json({
                 pedido,
@@ -475,6 +495,7 @@ export default class RfidController extends AbstractController {
                 detalles: detallesCreados,
                 prepacks,
                 total_prepacks: prepacks.length,
+                agrupador,
             });
         } catch (err: any) {
             await t.rollback();
@@ -881,8 +902,25 @@ export default class RfidController extends AbstractController {
                 ],
             });
 
-            // 2a) Si no existe → TAG_DESCONOCIDO. Igual registramos la lectura.
+            // 2a) Si no existe como Tag, antes de declarar TAG_DESCONOCIDO
+            // intentamos ver si el EPC pertenece a un OrdenAgrupador (chip
+            // maestro de una OC). Si si, delegamos a procesarLecturaAgrupador
+            // para avanzar en bloque todos los Tag de esa OC.
             if (!tag) {
+                const agrupador: any = await db.OrdenAgrupador.findOne({ where: { epc } });
+                if (agrupador) {
+                    await this.procesarLecturaAgrupador(agrupador, {
+                        lector_id: lector_id as string,
+                        etapa: etapa as string,
+                        bahia,
+                        rssi,
+                        antenna_port,
+                        ahora,
+                        res,
+                    });
+                    return;
+                }
+
                 const anom = await this.crearAnomalia({
                     epc, lector_id, bahia, etapa,
                     tipo_error: 'TAG_DESCONOCIDO',
@@ -1413,6 +1451,362 @@ export default class RfidController extends AbstractController {
                 },
             ],
             transaction,
+        });
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // ENDPOINTS DEL CHIP MAESTRO (OrdenAgrupador) — OPCIONAL POR OC
+    // ════════════════════════════════════════════════════════════════════
+
+    /**
+     * GET /rfid/orden/:orden_id/agrupador
+     * Devuelve el agrupador (chip maestro) de una OC si existe, junto con
+     * el conteo de prepacks. El frontend usa esto para mostrar la tarjeta
+     * "Chip maestro" en el panel de detalle de la OC.
+     */
+    private async getAgrupador(req: Request, res: Response): Promise<void> {
+        try {
+            const orden_id = req.params['orden_id'];
+            const agrupador: any = await db.OrdenAgrupador.findOne({ where: { orden_id } });
+            const palets: any[] = await db.Palet.findAll({ where: { orden_id }, attributes: ['palet_id'] });
+            const paletIds = palets.map((p: any) => p.palet_id);
+            const total_prepacks = paletIds.length > 0
+                ? await db.Tag.count({ where: { palet_id: paletIds } })
+                : 0;
+            res.status(200).json({ agrupador: agrupador || null, total_prepacks });
+        } catch (err: any) {
+            console.error('[RfidController.getAgrupador]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
+    }
+
+    /**
+     * POST /rfid/orden-agrupador
+     * Crea el placeholder agrupador para una OC ya existente (si al crear
+     * la OC no se uso el flag `agruparOC: true`, esto permite activarlo
+     * despues). Bloqueado si la OC ya tiene tags fuera de REGISTRADO o si
+     * ya existe agrupador.
+     *
+     * Body: { orden_id: string }
+     */
+    private async postCrearAgrupador(req: Request, res: Response): Promise<void> {
+        try {
+            const orden_id = String(req.body?.orden_id || '').trim();
+            if (!orden_id) {
+                res.status(400).json({ error: 'campos_requeridos', message: 'orden_id es requerido.' });
+                return;
+            }
+
+            const orden = await db.OrdenCompra.findByPk(orden_id);
+            if (!orden) {
+                res.status(404).json({ error: 'oc_no_encontrada', message: `OC ${orden_id} no existe.` });
+                return;
+            }
+
+            const existente = await db.OrdenAgrupador.findOne({ where: { orden_id } });
+            if (existente) {
+                res.status(409).json({ error: 'agrupador_ya_existe', agrupador: existente });
+                return;
+            }
+
+            // Bloquear si la OC ya esta en operacion (tags fuera de REGISTRADO).
+            const palets: any[] = await db.Palet.findAll({ where: { orden_id }, attributes: ['palet_id'] });
+            const paletIds = palets.map((p: any) => p.palet_id);
+            if (paletIds.length > 0) {
+                const enProgreso = await db.Tag.count({
+                    where: { palet_id: paletIds, etapa_actual: { [Op.ne]: 'REGISTRADO' } },
+                });
+                if (enProgreso > 0) {
+                    res.status(400).json({
+                        error: 'oc_en_progreso',
+                        message: `No se puede agrupar: hay ${enProgreso} tag(s) en etapas posteriores a REGISTRADO.`,
+                    });
+                    return;
+                }
+            }
+
+            const epcPlaceholder = `GRP-PENDIENTE-${orden_id}`;
+            const agrupador = await db.OrdenAgrupador.create({
+                orden_id,
+                epc: epcPlaceholder,
+            });
+
+            res.status(201).json({ agrupador });
+        } catch (err: any) {
+            console.error('[RfidController.postCrearAgrupador]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
+    }
+
+    /**
+     * POST /rfid/asignar-epc-agrupador
+     * Reemplaza el EPC placeholder del agrupador por el EPC real leido del
+     * chip fisico (autocompleta el modal del frontend via socket
+     * 'uid-detectado' del lector de registro).
+     *
+     * Body: { orden_id: string, epc_real: string }
+     */
+    private async postAsignarEpcAgrupador(req: Request, res: Response): Promise<void> {
+        try {
+            const orden_id = String(req.body?.orden_id || '').trim();
+            const epc_real = String(req.body?.epc_real || '').trim();
+
+            if (!orden_id || !epc_real) {
+                res.status(400).json({
+                    error: 'campos_requeridos',
+                    message: 'orden_id y epc_real son requeridos.',
+                });
+                return;
+            }
+            if (epc_real.startsWith('PENDIENTE-') || epc_real.startsWith('GRP-PENDIENTE-')) {
+                res.status(400).json({
+                    error: 'epc_invalido',
+                    message: 'El EPC real no puede ser un placeholder.',
+                });
+                return;
+            }
+
+            const agrupador: any = await db.OrdenAgrupador.findOne({ where: { orden_id } });
+            if (!agrupador) {
+                res.status(404).json({ error: 'agrupador_no_encontrado' });
+                return;
+            }
+
+            // Validar que el EPC real no colisione con un Tag.epc ni con otro agrupador.
+            const tagConflicto = await db.Tag.findByPk(epc_real);
+            if (tagConflicto) {
+                res.status(409).json({
+                    error: 'epc_duplicado',
+                    tabla: 'Tag',
+                    message: `El EPC "${epc_real}" ya esta en uso por un prepack individual.`,
+                });
+                return;
+            }
+            const otroAgrupador: any = await db.OrdenAgrupador.findOne({
+                where: { epc: epc_real, orden_id: { [Op.ne]: orden_id } },
+            });
+            if (otroAgrupador) {
+                res.status(409).json({
+                    error: 'epc_duplicado',
+                    tabla: 'OrdenAgrupador',
+                    message: `El EPC "${epc_real}" ya esta asignado al agrupador de otra OC.`,
+                });
+                return;
+            }
+
+            const epc_anterior = agrupador.epc;
+            await agrupador.update({ epc: epc_real });
+
+            emit('agrupador-asignado', { orden_id, epc_anterior, epc_nuevo: epc_real });
+
+            res.status(200).json({ message: 'EPC del agrupador asignado correctamente', agrupador });
+        } catch (err: any) {
+            console.error('[RfidController.postAsignarEpcAgrupador]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
+    }
+
+    /**
+     * DELETE /rfid/orden-agrupador/:orden_id
+     * Elimina el agrupador. Bloqueado si ya hay EventoLectura registrado
+     * por ese chip maestro (preserva historial). Util para corregir errores
+     * antes de empezar a leer.
+     */
+    private async deleteAgrupador(req: Request, res: Response): Promise<void> {
+        try {
+            const orden_id = req.params['orden_id'];
+            const agrupador: any = await db.OrdenAgrupador.findOne({ where: { orden_id } });
+            if (!agrupador) {
+                res.status(404).json({ error: 'agrupador_no_encontrado' });
+                return;
+            }
+            // No bloqueamos por EventoLectura porque las lecturas se registran
+            // por Tag individual (no por agrupador.epc) — ver
+            // procesarLecturaAgrupador. Aun asi, si ya hay tags avanzados de
+            // la OC, advertimos.
+            await agrupador.destroy();
+            emit('agrupador-eliminado', { orden_id });
+            res.status(200).json({ message: 'Agrupador eliminado' });
+        } catch (err: any) {
+            console.error('[RfidController.deleteAgrupador]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+        }
+    }
+
+    /**
+     * Helper privado: cuando una lectura llega con un EPC que pertenece a
+     * un OrdenAgrupador (chip maestro), avanzamos en bloque todos los Tag
+     * de la OC siguiendo las mismas reglas que postLectura individual:
+     *   - No retrocede etapas.
+     *   - Salta tags RECHAZADO y ENVIADO.
+     *   - Insertamos un EventoLectura por cada Tag avanzado (respeta la FK
+     *     EventoLectura.epc → Tag.epc; el agrupador no tiene fila en Tag).
+     *   - Emitimos UN SOLO socket 'lectura-agrupador' con resumen.
+     *
+     * Solo permitido en etapas no-fisicas-de-bahia: RECEPCION, QA,
+     * REGISTRO, AUDITORIA, SALIDA. En SORTING/PACKING/EMPAQUETADO cada
+     * prepack va a una bahia distinta, asi que no tiene sentido un avance
+     * grupal — devolvemos 400.
+     */
+    private async procesarLecturaAgrupador(
+        agrupador: any,
+        ctx: {
+            lector_id: string,
+            etapa: string,
+            bahia: string | null,
+            rssi: number | null,
+            antenna_port: string | null,
+            ahora: Date,
+            res: Response,
+        }
+    ): Promise<void> {
+        const { lector_id, etapa, bahia, rssi, antenna_port, ahora, res } = ctx;
+
+        // Validacion: solo permitir etapas no-fisicas.
+        const ETAPAS_AGRUPABLES = new Set(['RECEPCION', 'QA', 'REGISTRO', 'AUDITORIA', 'SALIDA']);
+        if (!ETAPAS_AGRUPABLES.has(etapa)) {
+            res.status(400).json({
+                error: 'etapa_no_agrupable',
+                message: `El chip maestro no puede usarse en etapa ${etapa} (cada prepack va a una bahia distinta). Etapas permitidas: ${Array.from(ETAPAS_AGRUPABLES).join(', ')}.`,
+            });
+            return;
+        }
+
+        // Defensa en profundidad: si el agrupador aun tiene EPC placeholder,
+        // no procesamos. Esto en teoria no deberia llegar porque el ESP32
+        // manda el EPC fisico, pero por si acaso.
+        if (String(agrupador.epc).startsWith('GRP-PENDIENTE-')) {
+            res.status(400).json({
+                error: 'agrupador_sin_chip',
+                message: 'El agrupador aun no tiene chip fisico asignado. Asigna el EPC real primero.',
+            });
+            return;
+        }
+
+        // Dedupe a nivel agrupador: si el mismo agrupador.epc se leyo por
+        // el mismo lector en los ultimos 5s, no avanzamos. Buscamos en una
+        // tabla auxiliar usando los EventoLectura de los tags de la OC con
+        // un marcador en el lector_id; mas simple: usamos memoria temporal
+        // basada en el ultimo EventoLectura de cualquier tag de la OC en
+        // ese lector dentro de la ventana.
+        const palets: any[] = await db.Palet.findAll({
+            where: { orden_id: agrupador.orden_id },
+            attributes: ['palet_id'],
+        });
+        const paletIds = palets.map((p: any) => p.palet_id);
+        if (paletIds.length === 0) {
+            res.status(404).json({ error: 'oc_sin_palets', message: 'La OC del agrupador no tiene palets asignados.' });
+            return;
+        }
+        const tags: any[] = await db.Tag.findAll({
+            where: { palet_id: paletIds },
+            include: [{ model: db.Tienda, attributes: ['tienda_id', 'nombre', 'bahia_asignada'] }],
+        });
+        if (tags.length === 0) {
+            res.status(404).json({ error: 'oc_sin_prepacks', message: 'La OC del agrupador no tiene prepacks asignados.' });
+            return;
+        }
+
+        const desde = new Date(ahora.getTime() - VENTANA_DUPLICADO_MS);
+        const epcsDeOC = tags.map((t: any) => t.epc);
+        const reciente = await db.EventoLectura.findOne({
+            where: {
+                epc: epcsDeOC,
+                lector_id,
+                timestamp: { [Op.gte]: desde },
+            },
+            order: [['timestamp', 'DESC']],
+        });
+        const esDuplicado = !!reciente;
+        if (esDuplicado) {
+            const primerTag = tags[0];
+            const anom = await this.crearAnomalia({
+                epc: primerTag.epc,
+                lector_id, bahia, etapa,
+                tipo_error: 'LECTURA_DUPLICADA',
+                descripcion: `Lectura repetida del chip maestro ${agrupador.epc} (OC ${agrupador.orden_id}) en ${lector_id} dentro de ${VENTANA_DUPLICADO_MS / 1000}s. No se avanzaron prepacks.`,
+                proveedor_id: primerTag.proveedor_id,
+                timestamp: ahora,
+            });
+            emit('anomalia', anom);
+            res.status(200).json({
+                modo: 'agrupador',
+                orden_id: agrupador.orden_id,
+                duplicado: true,
+                avanzados: 0,
+                omitidos: tags.length,
+                mensaje: 'Lectura duplicada; no se avanzaron prepacks.',
+            });
+            return;
+        }
+
+        // Avance en cascada con las mismas reglas que un Tag individual.
+        const nuevoEstado = ETAPA_A_ESTADO_PREPACK[etapa];
+        const idxNuevo = nuevoEstado ? ORDEN_ESTADOS.indexOf(nuevoEstado) : -1;
+
+        const avanzados: any[] = [];
+        const omitidos: any[] = [];
+
+        const t = await db.sequelize.transaction();
+        try {
+            for (const tag of tags) {
+                const etapaAnterior = tag.etapa_actual;
+                const idxActual = ORDEN_ESTADOS.indexOf(etapaAnterior);
+                const puedeAvanzar =
+                    etapaAnterior !== 'RECHAZADO' &&
+                    nuevoEstado &&
+                    idxNuevo > idxActual;
+
+                if (puedeAvanzar) {
+                    await tag.update({ etapa_actual: nuevoEstado }, { transaction: t });
+                    // Insertar EventoLectura por este tag para preservar
+                    // historico (la FK EventoLectura.epc requiere un Tag real).
+                    await db.EventoLectura.create({
+                        epc: tag.epc,
+                        lector_id,
+                        bahia: bahia || '',
+                        timestamp: ahora,
+                        etapa,
+                        rssi,
+                        antenna_port,
+                        es_duplicado: false,
+                    }, { transaction: t });
+                    avanzados.push({ epc: tag.epc, etapaAnterior, etapaNueva: nuevoEstado });
+                } else {
+                    omitidos.push({ epc: tag.epc, etapa_actual: etapaAnterior, razon: etapaAnterior === 'RECHAZADO' ? 'rechazado' : 'no_retrocede' });
+                }
+            }
+            await t.commit();
+        } catch (err: any) {
+            await t.rollback();
+            console.error('[procesarLecturaAgrupador]', err);
+            res.status(500).json({ error: 'error_interno', message: err.message });
+            return;
+        }
+
+        // Emitimos UN solo socket de resumen (no N eventos individuales para
+        // no saturar las pantallas en OCs grandes).
+        emit('lectura-agrupador', {
+            orden_id: agrupador.orden_id,
+            epc_agrupador: agrupador.epc,
+            lector_id,
+            etapa,
+            bahia,
+            timestamp: ahora,
+            etapaNueva: nuevoEstado,
+            total_avanzados: avanzados.length,
+            total_omitidos: omitidos.length,
+            tags_afectados: avanzados,
+        });
+
+        res.status(200).json({
+            modo: 'agrupador',
+            orden_id: agrupador.orden_id,
+            etapaNueva: nuevoEstado,
+            avanzados: avanzados.length,
+            omitidos: omitidos.length,
+            tags_afectados: avanzados,
+            tags_omitidos: omitidos,
         });
     }
 }
