@@ -7,6 +7,7 @@
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 
 export default class CajaController extends AbstractController {
     //Singleton
@@ -16,6 +17,7 @@ export default class CajaController extends AbstractController {
             (this._instance = new this("Caja"));
     }
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarCajas',
             this.getListarCajas.bind(this));
         this.router.post('/crearCaja',

@@ -18,6 +18,7 @@
 import { Request, Response } from "express";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 
 export default class AnomaliaController extends AbstractController {
     //Singleton
@@ -27,6 +28,7 @@ export default class AnomaliaController extends AbstractController {
             (this._instance = new this("Anomalia"));
     }
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarAnomalias', this.getListarAnomalias.bind(this));
         this.router.post('/crearAnomalia', this.postCrearAnomalia.bind(this));
         this.router.patch('/:id/resolver', this.patchResolverAnomalia.bind(this));

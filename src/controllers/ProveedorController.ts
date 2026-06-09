@@ -26,6 +26,7 @@ import { Request, Response } from "express";
 import { Op } from "sequelize";
 import AbstractController from "./AbstractController";
 import db from "../models";
+import { verifyToken } from "../middleware/verifyToken";
 
 const RESULTADO_MAP: Record<string, string> = {
     APROBADO:  'ok',
@@ -40,6 +41,7 @@ export default class ProveedorController extends AbstractController {
     }
 
     protected initRoutes(): void {
+        this.router.use(verifyToken);
         this.router.get('/listarProveedores', this.getListarProveedores.bind(this));
         this.router.post('/crearProveedor',   this.postCrearProveedor.bind(this));
         this.router.get('/:id/perfil',        this.getPerfilProveedor.bind(this));
