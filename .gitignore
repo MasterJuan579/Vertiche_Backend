@@ -140,3 +140,6 @@ vite.config.ts.timestamp-*
 
 # Logs de PM2
 logs/
+
+# Arduino secrets
+Vertiche_ESP32_RFID_/secrets.h
